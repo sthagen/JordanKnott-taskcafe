@@ -1,7 +1,7 @@
-import React, { useState, useContext, useEffect } from 'react';
+import React, { useState } from 'react';
 import Modal from 'shared/components/Modal';
 import TaskDetails from 'shared/components/TaskDetails';
-import PopupMenu, { Popup, usePopup } from 'shared/components/PopupMenu';
+import { Popup, usePopup } from 'shared/components/PopupMenu';
 import MemberManager from 'shared/components/MemberManager';
 import { useRouteMatch, useHistory } from 'react-router';
 import {
@@ -22,7 +22,7 @@ import {
   FindTaskDocument,
   FindTaskQuery,
 } from 'shared/generated/graphql';
-import UserIDContext from 'App/context';
+import { useCurrentUser } from 'App/context';
 import MiniProfile from 'shared/components/MiniProfile';
 import DueDateManager from 'shared/components/DueDateManager';
 import produce from 'immer';
@@ -31,6 +31,7 @@ import Button from 'shared/components/Button';
 import Input from 'shared/components/Input';
 import { useForm } from 'react-hook-form';
 import updateApolloCache from 'shared/utils/cache';
+import NOOP from 'shared/utils/noop';
 
 const calculateChecklistBadge = (checklists: Array<TaskChecklist>) => {
   const total = checklists.reduce((prev: any, next: any) => {
@@ -75,15 +76,12 @@ const CreateChecklistInput = styled(Input)`
   margin-bottom: 8px;
 `;
 
-const InputError = styled.span`
-  color: rgba(${props => props.theme.colors.danger});
-  font-size: 12px;
-`;
 type CreateChecklistPopupProps = {
   onCreateChecklist: (data: CreateChecklistData) => void;
 };
+
 const CreateChecklistPopup: React.FC<CreateChecklistPopupProps> = ({ onCreateChecklist }) => {
-  const { register, handleSubmit, errors } = useForm<CreateChecklistData>();
+  const { register, handleSubmit } = useForm<CreateChecklistData>();
   const createUser = (data: CreateChecklistData) => {
     onCreateChecklist(data);
   };
@@ -129,12 +127,9 @@ const Details: React.FC<DetailsProps> = ({
   availableMembers,
   refreshCache,
 }) => {
-  const { userID } = useContext(UserIDContext);
+  const { user } = useCurrentUser();
   const { showPopup, hidePopup } = usePopup();
   const history = useHistory();
-  const match = useRouteMatch();
-  const [currentMemberTask, setCurrentMemberTask] = useState('');
-  const [memberPopupData, setMemberPopupData] = useState(initialMemberPopupState);
   const [updateTaskChecklistLocation] = useUpdateTaskChecklistLocationMutation();
   const [updateTaskChecklistItemLocation] = useUpdateTaskChecklistItemLocationMutation({
     update: (client, response) => {
@@ -144,14 +139,11 @@ const Details: React.FC<DetailsProps> = ({
         cache =>
           produce(cache, draftCache => {
             const { prevChecklistID, checklistID, checklistItem } = response.data.updateTaskChecklistItemLocation;
-            console.log(`${checklistID} !== ${prevChecklistID}`);
             if (checklistID !== prevChecklistID) {
               const oldIdx = cache.findTask.checklists.findIndex(c => c.id === prevChecklistID);
               const newIdx = cache.findTask.checklists.findIndex(c => c.id === checklistID);
-              console.log(`oldIdx ${oldIdx} newIdx ${newIdx}`);
               if (oldIdx > -1 && newIdx > -1) {
-                const item = cache.findTask.checklists[oldIdx].items.find(item => item.id === checklistItem.id);
-                console.log(item);
+                const item = cache.findTask.checklists[oldIdx].items.find(i => i.id === checklistItem.id);
                 if (item) {
                   draftCache.findTask.checklists[oldIdx].items = cache.findTask.checklists[oldIdx].items.filter(
                     i => i.id !== checklistItem.id,
@@ -195,7 +187,6 @@ const Details: React.FC<DetailsProps> = ({
         cache =>
           produce(cache, draftCache => {
             const { checklists } = cache.findTask;
-            console.log(deleteData);
             draftCache.findTask.checklists = checklists.filter(
               c => c.id !== deleteData.data.deleteTaskChecklist.taskChecklist.id,
             );
@@ -299,25 +290,26 @@ const Details: React.FC<DetailsProps> = ({
     },
   });
   if (loading) {
-    return <div>loading</div>;
+    return null;
   }
   if (!data) {
-    return <div>loading</div>;
+    return null;
   }
   return (
     <>
       <Modal
-        width={768}
+        width={1070}
         onClose={() => {
           history.push(projectURL);
         }}
         renderContent={() => {
           return (
             <TaskDetails
+              me={data.me.user}
               task={data.findTask}
               onChecklistDrop={checklist => {
                 updateTaskChecklistLocation({
-                  variables: { checklistID: checklist.id, position: checklist.position },
+                  variables: { taskChecklistID: checklist.id, position: checklist.position },
 
                   optimisticResponse: {
                     __typename: 'Mutation',
@@ -332,20 +324,24 @@ const Details: React.FC<DetailsProps> = ({
                   },
                 });
               }}
-              onChecklistItemDrop={(prevChecklistID, checklistID, checklistItem) => {
+              onChecklistItemDrop={(prevChecklistID, taskChecklistID, checklistItem) => {
                 updateTaskChecklistItemLocation({
-                  variables: { checklistID, checklistItemID: checklistItem.id, position: checklistItem.position },
+                  variables: {
+                    taskChecklistID,
+                    taskChecklistItemID: checklistItem.id,
+                    position: checklistItem.position,
+                  },
                   optimisticResponse: {
                     __typename: 'Mutation',
                     updateTaskChecklistItemLocation: {
                       __typename: 'UpdateTaskChecklistItemLocationPayload',
                       prevChecklistID,
-                      checklistID,
+                      taskChecklistID,
                       checklistItem: {
                         __typename: 'TaskChecklistItem',
                         position: checklistItem.position,
                         id: checklistItem.id,
-                        taskChecklistID: checklistID,
+                        taskChecklistID,
                       },
                     },
                   },
@@ -402,30 +398,34 @@ const Details: React.FC<DetailsProps> = ({
                 if (member) {
                   showPopup(
                     $targetRef,
-                    <Popup title={null} onClose={() => {}} tab={0}>
+                    <Popup title={null} onClose={NOOP} tab={0}>
                       <MiniProfile
                         user={member}
                         bio="None"
                         onRemoveFromTask={() => {
-                          unassignTask({ variables: { taskID: data.findTask.id, userID: userID ?? '' } });
+                          if (user) {
+                            unassignTask({ variables: { taskID: data.findTask.id, userID: user.id } });
+                          }
                         }}
                       />
                     </Popup>,
                   );
                 }
               }}
-              onOpenAddMemberPopup={(task, $targetRef) => {
+              onOpenAddMemberPopup={(_task, $targetRef) => {
                 showPopup(
                   $targetRef,
-                  <Popup title="Members" tab={0} onClose={() => {}}>
+                  <Popup title="Members" tab={0} onClose={NOOP}>
                     <MemberManager
                       availableMembers={availableMembers}
                       activeMembers={data.findTask.assigned}
                       onMemberChange={(member, isActive) => {
-                        if (isActive) {
-                          assignTask({ variables: { taskID: data.findTask.id, userID: userID ?? '' } });
-                        } else {
-                          unassignTask({ variables: { taskID: data.findTask.id, userID: userID ?? '' } });
+                        if (user) {
+                          if (isActive) {
+                            assignTask({ variables: { taskID: data.findTask.id, userID: member.id } });
+                          } else {
+                            unassignTask({ variables: { taskID: data.findTask.id, userID: member.id } });
+                          }
                         }
                       }}
                     />
@@ -446,10 +446,8 @@ const Details: React.FC<DetailsProps> = ({
                     <CreateChecklistPopup
                       onCreateChecklist={checklistData => {
                         let position = 65535;
-                        console.log(data.findTask.checklists);
                         if (data.findTask.checklists) {
                           const [lastChecklist] = data.findTask.checklists.slice(-1);
-                          console.log(`lastCheclist ${lastChecklist}`);
                           if (lastChecklist) {
                             position = lastChecklist.position * 2 + 1;
                           }
@@ -488,7 +486,7 @@ const Details: React.FC<DetailsProps> = ({
                 showPopup(
                   $targetRef,
                   <Popup
-                    title={'Change Due Date'}
+                    title="Change Due Date"
                     tab={0}
                     onClose={() => {
                       hidePopup();
@@ -504,9 +502,10 @@ const Details: React.FC<DetailsProps> = ({
                         updateTaskDueDate({ variables: { taskID: t.id, dueDate: newDueDate } });
                         hidePopup();
                       }}
-                      onCancel={() => {}}
+                      onCancel={NOOP}
                     />
                   </Popup>,
+                  { showDiamond: false, targetPadding: '0' },
                 );
               }}
             />

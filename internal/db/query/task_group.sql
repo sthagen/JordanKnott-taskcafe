@@ -5,6 +5,9 @@ INSERT INTO task_group (project_id, created_at, name, position)
 -- name: GetTaskGroupsForProject :many
 SELECT * FROM task_group WHERE project_id = $1;
 
+-- name: GetProjectIDForTaskGroup :one
+SELECT project_id from task_group WHERE task_group_id = $1;
+
 -- name: GetAllTaskGroups :many
 SELECT * FROM task_group;
 
@@ -19,4 +22,3 @@ DELETE FROM task_group WHERE task_group_id = $1;
 
 -- name: UpdateTaskGroupLocation :one
 UPDATE task_group SET position = $2 WHERE task_group_id = $1 RETURNING *;
-

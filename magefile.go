@@ -14,24 +14,65 @@ import (
 	"github.com/shurcooL/vfsgen"
 )
 
+// Aliases is a list of short names for often used commands
 var Aliases = map[string]interface{}{
 	"s":  Backend.Schema,
 	"up": Docker.Up,
 }
 
+// Frontend is the namespace for all commands that interact with the frontend
 type Frontend mg.Namespace
 
+// Install the npm dependencies for the React frontend
 func (Frontend) Install() error {
 	return sh.RunV("yarn", "--cwd", "frontend", "install")
 }
 
+// Eslint runs eslint on the frontend source
+func (Frontend) Eslint() error {
+	return sh.RunV("yarn", "--cwd", "frontend", "lint")
+}
+
+// Tsc runs tsc on the frontend source
+func (Frontend) Tsc() error {
+	return sh.RunV("yarn", "--cwd", "frontend", "tsc")
+}
+
+// Lint the frontend source
+func (Frontend) Lint() {
+	mg.SerialDeps(Frontend.Eslint, Frontend.Tsc)
+}
+
+// Build the React frontend
 func (Frontend) Build() error {
 	return sh.RunV("yarn", "--cwd", "frontend", "build")
 }
 
+// Backend is the namespace for all commands that interact with the backend
 type Backend mg.Namespace
 
+// GenMigrations embeds schema migration files into Go source code
+func (Backend) GenMigrations() error {
+	if _, err := os.Stat("internal/migrations"); os.IsNotExist(err) {
+		os.Mkdir("internal/migrations/", 0755)
+	}
+	var fs http.FileSystem = http.Dir("migrations")
+	err := vfsgen.Generate(fs, vfsgen.Options{
+		Filename:     "internal/migrations/migrations_generated.go",
+		PackageName:  "migrations",
+		VariableName: "Migrations",
+	})
+	if err != nil {
+		panic(err)
+	}
+	return nil
+}
+
+// GenFrontend embeds built frontend client into Go source code
 func (Backend) GenFrontend() error {
+	if _, err := os.Stat("internal/frontend/"); os.IsNotExist(err) {
+		os.Mkdir("internal/frontend/", 0755)
+	}
 	var fs http.FileSystem = http.Dir("frontend/build")
 	err := vfsgen.Generate(fs, vfsgen.Options{
 		Filename:     "internal/frontend/frontend_generated.go",
@@ -44,11 +85,13 @@ func (Backend) GenFrontend() error {
 	return nil
 }
 
+// Build the Go api service
 func (Backend) Build() error {
-	fmt.Println("compiling binary dist/citadel")
-	return sh.Run("go", "build", "-o", "dist/citadel", "cmd/citadel/main.go")
+	fmt.Println("compiling binary dist/taskcafe")
+	return sh.Run("go", "build", "-tags", "prod", "-o", "dist/taskcafe", "cmd/taskcafe/main.go")
 }
 
+// Schema merges GraphQL schema files into single schema & runs gqlgen
 func (Backend) Schema() error {
 	files, err := ioutil.ReadDir("internal/graph/schema/")
 	if err != nil {
@@ -75,20 +118,25 @@ func (Backend) Schema() error {
 	return sh.Run("gqlgen")
 }
 
+// Install runs frontend:install
 func Install() {
 	mg.SerialDeps(Frontend.Install)
 }
 
+// Build runs frontend:build, backend:genMigrations, backend:genFrontend, backend:build
 func Build() {
-	mg.SerialDeps(Frontend.Build, Backend.GenFrontend, Backend.Build)
+	mg.SerialDeps(Frontend.Build, Backend.GenMigrations, Backend.GenFrontend, Backend.Build)
 }
 
+// Docker is namespace for commands interacting with docker
 type Docker mg.Namespace
 
+// Up runs the main docker compose file
 func (Docker) Up() error {
-	return sh.RunV("docker-compose", "-p", "citadel", "up", "-d")
+	return sh.RunV("docker-compose", "-p", "taskcafe", "up", "-d")
 }
 
+// Migrate runs the migration command for the docker-compose network
 func (Docker) Migrate() error {
-	return sh.RunV("docker-compose", "-p", "citadel", "-f", "docker-compose.yml", "-f", "docker-compose.migrate.yml", "run", "--rm", "migrate")
+	return sh.RunV("docker-compose", "-p", "taskcafe", "-f", "docker-compose.yml", "-f", "docker-compose.migrate.yml", "run", "--rm", "migrate")
 }

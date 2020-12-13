@@ -25,7 +25,7 @@ const WindowTitle = styled.div`
 
 const WindowTitleIcon = styled(CheckSquareOutline)`
   top: 10px;
-  left: -40px;
+  left: -32px;
   position: absolute;
 `;
 
@@ -566,9 +566,6 @@ const Checklist = React.forwardRef(
         $name.current.select();
       }
     }, [editting]);
-    useEffect(() => {
-      console.log($container);
-    }, [$container]);
     return (
       <Wrapper ref={$container} {...wrapperProps}>
         <WindowTitle>

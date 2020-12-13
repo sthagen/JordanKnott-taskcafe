@@ -1,13 +1,13 @@
-import React, { useState, useContext, useEffect } from 'react';
+import React from 'react';
 import TopNavbar, { MenuItem } from 'shared/components/TopNavbar';
 import styled from 'styled-components/macro';
-import DropdownMenu, { ProfileMenu } from 'shared/components/DropdownMenu';
+import { ProfileMenu } from 'shared/components/DropdownMenu';
 import ProjectSettings, { DeleteConfirm, DELETE_INFO } from 'shared/components/ProjectSettings';
 import { useHistory } from 'react-router';
-import UserIDContext from 'App/context';
+import { PermissionLevel, PermissionObjectType, useCurrentUser } from 'App/context';
 import {
   RoleCode,
-  useMeQuery,
+  useTopNavbarQuery,
   useDeleteProjectMutation,
   useGetProjectsQuery,
   GetProjectsDocument,
@@ -16,6 +16,10 @@ import { usePopup, Popup } from 'shared/components/PopupMenu';
 import { History } from 'history';
 import produce from 'immer';
 import { Link } from 'react-router-dom';
+import MiniProfile from 'shared/components/MiniProfile';
+import cache from 'App/cache';
+import NOOP from 'shared/utils/noop';
+import NotificationPopup, { NotificationItem } from 'shared/components/NotifcationPopup';
 
 const TeamContainer = styled.div`
   display: flex;
@@ -128,12 +132,12 @@ const ProjectFinder = () => {
     return <span>loading</span>;
   }
   if (data) {
-    const { projects, teams, organizations } = data;
+    const { projects, teams } = data;
     const projectTeams = teams.map(team => {
       return {
         id: team.id,
         name: team.name,
-        projects: projects.filter(project => project.team.id === team.id),
+        projects: projects.filter(project => project.team && project.team.id === team.id),
       };
     });
     return (
@@ -175,9 +179,6 @@ export const ProjectPopup: React.FC<ProjectPopupProps> = ({ history, name, proje
         query: GetProjectsDocument,
       });
 
-      console.log(cacheData);
-      console.log(deleteData);
-
       const newData = produce(cacheData, (draftState: any) => {
         draftState.projects = draftState.projects.filter(
           (project: any) => project.id !== deleteData.data.deleteProject.project.id,
@@ -197,7 +198,7 @@ export const ProjectPopup: React.FC<ProjectPopupProps> = ({ history, name, proje
       <Popup title={null} tab={0}>
         <ProjectSettings
           onDeleteProject={() => {
-            setTab(1, 300);
+            setTab(1, { width: 300 });
           }}
         />
       </Popup>
@@ -221,6 +222,7 @@ export const ProjectPopup: React.FC<ProjectPopupProps> = ({ history, name, proje
 type GlobalTopNavbarProps = {
   nameOnly?: boolean;
   projectID: string | null;
+  teamID?: string | null;
   onChangeProjectOwner?: (userID: string) => void;
   name: string | null;
   currentTab?: number;
@@ -238,7 +240,7 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
   currentTab,
   onSetTab,
   menuType,
-  projectID,
+  teamID,
   onChangeProjectOwner,
   onChangeRole,
   name,
@@ -247,13 +249,27 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
   onInviteUser,
   onSaveProjectName,
   onRemoveFromBoard,
-  nameOnly,
 }) => {
-  console.log(popupContent);
-  const { loading, data } = useMeQuery();
-  const { showPopup, hidePopup, setTab } = usePopup();
+  const { user, setUserRoles, setUser } = useCurrentUser();
+  const { loading, data } = useTopNavbarQuery({
+    onCompleted: response => {
+      if (user && user.roles) {
+        setUserRoles({
+          org: user.roles.org,
+          teams: response.me.teamRoles.reduce((map, obj) => {
+            map.set(obj.teamID, obj.roleCode);
+            return map;
+          }, new Map<string, string>()),
+          projects: response.me.projectRoles.reduce((map, obj) => {
+            map.set(obj.projectID, obj.roleCode);
+            return map;
+          }, new Map<string, string>()),
+        });
+      }
+    },
+  });
+  const { showPopup, hidePopup } = usePopup();
   const history = useHistory();
-  const { userID, setUserID } = useContext(UserIDContext);
   const onLogout = () => {
     fetch('/auth/logout', {
       method: 'POST',
@@ -261,8 +277,9 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
     }).then(async x => {
       const { status } = x;
       if (status === 200) {
+        cache.reset();
         history.replace('/login');
-        setUserID(null);
+        setUser(null);
         hidePopup();
       }
     });
@@ -273,6 +290,7 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
       <Popup title={null} tab={0}>
         <ProfileMenu
           onLogout={onLogout}
+          showAdminConsole={user ? user.roles.org === 'admin' : false}
           onAdminConsole={() => {
             history.push('/admin');
             hidePopup();
@@ -283,21 +301,69 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
           }}
         />
       </Popup>,
-      195,
+      { width: 195 },
     );
   };
 
   const onOpenSettings = ($target: React.RefObject<HTMLElement>) => {
-    console.log('maybe firing popup');
     if (popupContent) {
-      console.log('showing popup');
-      showPopup($target, popupContent, 185);
+      showPopup($target, popupContent, { width: 185 });
     }
   };
 
-  if (!userID) {
+  const onNotificationClick = ($target: React.RefObject<HTMLElement>) => {
+    if (data) {
+      showPopup(
+        $target,
+        <NotificationPopup>
+          {data.notifications.map(notification => (
+            <NotificationItem
+              title={notification.entity.name}
+              description={`${notification.actor.name} added you as a meber to the task "${notification.entity.name}"`}
+              createdAt={notification.createdAt}
+            />
+          ))}
+        </NotificationPopup>,
+        { width: 415, borders: false, diamondColor: '#7367f0' },
+      );
+    }
+  };
+
+  if (!user) {
     return null;
   }
+  const userIsTeamOrProjectAdmin = user.isAdmin(PermissionLevel.TEAM, PermissionObjectType.TEAM, teamID);
+  const onMemberProfile = ($targetRef: React.RefObject<HTMLElement>, memberID: string) => {
+    const member = projectMembers ? projectMembers.find(u => u.id === memberID) : null;
+    const warning =
+      'You can’t leave because you are the only admin. To make another user an admin, click their avatar, select “Change permissions…”, and select “Admin”.';
+    if (member) {
+      showPopup(
+        $targetRef,
+        <MiniProfile
+          warning={member.role && member.role.code === 'owner' ? warning : null}
+          canChangeRole={userIsTeamOrProjectAdmin}
+          onChangeRole={roleCode => {
+            if (onChangeRole) {
+              onChangeRole(member.id, roleCode);
+            }
+          }}
+          onRemoveFromBoard={
+            member.role && member.role.code === 'owner'
+              ? undefined
+              : () => {
+                  if (onRemoveFromBoard) {
+                    onRemoveFromBoard(member.id);
+                  }
+                }
+          }
+          user={member}
+          bio=""
+        />,
+      );
+    }
+  };
+
   return (
     <>
       <TopNavbar
@@ -312,11 +378,14 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
           );
         }}
         currentTab={currentTab}
-        user={data ? data.me : null}
+        user={data ? data.me.user : null}
+        canEditProjectName={userIsTeamOrProjectAdmin}
+        canInviteUser={userIsTeamOrProjectAdmin}
+        onMemberProfile={onMemberProfile}
         onInviteUser={onInviteUser}
         onChangeRole={onChangeRole}
         onChangeProjectOwner={onChangeProjectOwner}
-        onNotificationClick={() => {}}
+        onNotificationClick={onNotificationClick}
         onSetTab={onSetTab}
         onRemoveFromBoard={onRemoveFromBoard}
         onDashboardClick={() => {

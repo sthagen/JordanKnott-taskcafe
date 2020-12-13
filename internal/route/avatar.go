@@ -5,18 +5,22 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
 	"time"
 
-	"github.com/jordanknott/project-citadel/api/internal/db"
-	"github.com/jordanknott/project-citadel/api/internal/frontend"
+	"github.com/jordanknott/taskcafe/internal/db"
+	"github.com/jordanknott/taskcafe/internal/frontend"
+	"github.com/jordanknott/taskcafe/internal/utils"
 )
 
-func (h *CitadelHandler) Frontend(w http.ResponseWriter, r *http.Request) {
+// Frontend serves the index.html file
+func (h *TaskcafeHandler) Frontend(w http.ResponseWriter, r *http.Request) {
 	f, err := frontend.Frontend.Open("index.h")
 	if os.IsNotExist(err) {
 		log.Warning("does not exist")
@@ -26,9 +30,10 @@ func (h *CitadelHandler) Frontend(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "index.html", time.Now(), f)
 }
 
-func (h *CitadelHandler) ProfileImageUpload(w http.ResponseWriter, r *http.Request) {
+// ProfileImageUpload handles a user uploading a new avatar profile image
+func (h *TaskcafeHandler) ProfileImageUpload(w http.ResponseWriter, r *http.Request) {
 	log.Info("preparing to upload file")
-	userID, ok := r.Context().Value("userID").(uuid.UUID)
+	userID, ok := r.Context().Value(utils.UserIDKey).(uuid.UUID)
 	if !ok {
 		log.Error("not a valid uuid")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -45,22 +50,24 @@ func (h *CitadelHandler) ProfileImageUpload(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer file.Close()
-	log.WithFields(log.Fields{"filename": handler.Filename, "size": handler.Size, "header": handler.Header}).Info("file metadata")
+	filename := strings.ReplaceAll(handler.Filename, " ", "-")
+	encodedFilename := url.QueryEscape(filename)
+	log.WithFields(log.Fields{"filename": encodedFilename, "size": handler.Size, "header": handler.Header}).Info("file metadata")
 
 	fileBytes, err := ioutil.ReadAll(file)
 	if err != nil {
 		log.WithError(err).Error("while reading file")
 		return
 	}
-	err = ioutil.WriteFile("uploads/"+handler.Filename, fileBytes, 0644)
+	err = ioutil.WriteFile("uploads/"+filename, fileBytes, 0644)
 	if err != nil {
 		log.WithError(err).Error("while reading file")
 		return
 	}
 
-	h.repo.UpdateUserAccountProfileAvatarURL(r.Context(), db.UpdateUserAccountProfileAvatarURLParams{UserID: userID, ProfileAvatarUrl: sql.NullString{String: "http://localhost:3333/uploads/" + handler.Filename, Valid: true}})
+	h.repo.UpdateUserAccountProfileAvatarURL(r.Context(), db.UpdateUserAccountProfileAvatarURLParams{UserID: userID, ProfileAvatarUrl: sql.NullString{String: "/uploads/" + encodedFilename, Valid: true}})
 	// return that we have successfully uploaded our file!
 	log.Info("file uploaded")
-	json.NewEncoder(w).Encode(AvatarUploadResponseData{URL: "http://localhost:3333/uploads/" + handler.Filename, UserID: userID.String()})
+	json.NewEncoder(w).Encode(AvatarUploadResponseData{URL: "/uploads/" + encodedFilename, UserID: userID.String()})
 
 }

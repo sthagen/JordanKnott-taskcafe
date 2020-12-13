@@ -3,5 +3,6 @@ dist/
 uploads/*
 !uploads/.keep
 internal/frontend/frontend_generated.go
-citadel
-conf/app.toml
+internal/migrations/migrations_generated.go
+taskcafe
+conf/taskcafe.toml

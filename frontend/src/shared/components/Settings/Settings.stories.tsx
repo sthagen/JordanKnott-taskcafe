@@ -18,7 +18,7 @@ const profile = {
   id: '1',
   fullName: 'Jordan Knott',
   username: 'jordanthedev',
-  profileIcon: { url: 'http://localhost:3333/uploads/headshot.png', bgColor: '#000', initials: 'JK' },
+  profileIcon: { url: '/uploads/headshot.png', bgColor: '#000', initials: 'JK' },
 };
 export const Default = () => {
   return (
@@ -27,6 +27,8 @@ export const Default = () => {
       <BaseStyles />
       <Settings
         profile={profile}
+        onChangeUserInfo={action('change user info')}
+        onResetPassword={action('reset password')}
         onProfileAvatarRemove={action('remove')}
         onProfileAvatarChange={action('profile avatar change')}
       />

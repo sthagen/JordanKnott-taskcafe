@@ -1,29 +1,33 @@
 version: "3"
 services:
   web:
-    build: .
+    image: taskcafe/taskcafe:latest
+    # build: .
     ports:
       - "3333:3333"
     depends_on:
       - postgres
     networks:
-      - citadel-test
+      - taskcafe-test
+    environment:
+      TASKCAFE_DATABASE_HOST: postgres
+      TASKCAFE_MIGRATE: "true"
   postgres:
     image: postgres:12.3-alpine
     restart: always
     networks:
-      - citadel-test
+      - taskcafe-test
     environment:
-      POSTGRES_USER: citadel
-      POSTGRES_PASSWORD: citadel_test
-      POSTGRES_DB: citadel
+      POSTGRES_USER: taskcafe
+      POSTGRES_PASSWORD: taskcafe_test
+      POSTGRES_DB: taskcafe
     volumes:
-    - citadel-postgres:/var/lib/postgresql/data
+    - taskcafe-postgres:/var/lib/postgresql/data
 
 volumes:
-  citadel-postgres:
+  taskcafe-postgres:
     external: false
 
 networks:
-  citadel-test:
+  taskcafe-test:
     driver: bridge

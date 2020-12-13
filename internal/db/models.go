@@ -16,10 +16,32 @@ type LabelColor struct {
 	Name         string    `json:"name"`
 }
 
+type Notification struct {
+	NotificationID       uuid.UUID `json:"notification_id"`
+	NotificationObjectID uuid.UUID `json:"notification_object_id"`
+	NotifierID           uuid.UUID `json:"notifier_id"`
+	Read                 bool      `json:"read"`
+}
+
+type NotificationObject struct {
+	NotificationObjectID uuid.UUID `json:"notification_object_id"`
+	EntityID             uuid.UUID `json:"entity_id"`
+	ActionType           int32     `json:"action_type"`
+	ActorID              uuid.UUID `json:"actor_id"`
+	EntityType           int32     `json:"entity_type"`
+	CreatedOn            time.Time `json:"created_on"`
+}
+
 type Organization struct {
 	OrganizationID uuid.UUID `json:"organization_id"`
 	CreatedAt      time.Time `json:"created_at"`
 	Name           string    `json:"name"`
+}
+
+type PersonalProject struct {
+	PersonalProjectID uuid.UUID `json:"personal_project_id"`
+	ProjectID         uuid.UUID `json:"project_id"`
+	UserID            uuid.UUID `json:"user_id"`
 }
 
 type Project struct {
@@ -27,7 +49,6 @@ type Project struct {
 	TeamID    uuid.UUID `json:"team_id"`
 	CreatedAt time.Time `json:"created_at"`
 	Name      string    `json:"name"`
-	Owner     uuid.UUID `json:"owner"`
 }
 
 type ProjectLabel struct {
@@ -73,6 +94,7 @@ type Task struct {
 	Description sql.NullString `json:"description"`
 	DueDate     sql.NullTime   `json:"due_date"`
 	Complete    bool           `json:"complete"`
+	CompletedAt sql.NullTime   `json:"completed_at"`
 }
 
 type TaskAssigned struct {
@@ -120,7 +142,6 @@ type Team struct {
 	CreatedAt      time.Time `json:"created_at"`
 	Name           string    `json:"name"`
 	OrganizationID uuid.UUID `json:"organization_id"`
-	Owner          uuid.UUID `json:"owner"`
 }
 
 type TeamMember struct {
@@ -142,4 +163,5 @@ type UserAccount struct {
 	Initials         string         `json:"initials"`
 	ProfileAvatarUrl sql.NullString `json:"profile_avatar_url"`
 	RoleCode         string         `json:"role_code"`
+	Bio              string         `json:"bio"`
 }

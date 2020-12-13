@@ -78,6 +78,7 @@ const Icon = styled.div`
 
 type InputProps = {
   variant?: 'normal' | 'alternate';
+  disabled?: boolean;
   label?: string;
   width?: string;
   floatingLabel?: boolean;
@@ -91,6 +92,7 @@ type InputProps = {
   name?: string;
   className?: string;
   defaultValue?: string;
+  value?: string;
   onClick?: (e: React.MouseEvent<HTMLInputElement>) => void;
 };
 
@@ -115,6 +117,7 @@ function useCombinedRefs(...refs: any) {
 const Input = React.forwardRef(
   (
     {
+      disabled = false,
       width = 'auto',
       variant = 'normal',
       type = 'text',
@@ -129,6 +132,7 @@ const Input = React.forwardRef(
       onClick,
       floatingLabel,
       defaultValue,
+      value,
       id,
     }: InputProps,
     $ref: any,
@@ -158,6 +162,7 @@ const Input = React.forwardRef(
           onChange={e => {
             setHasValue((e.currentTarget.value !== '' || floatingLabel) ?? false);
           }}
+          disabled={disabled}
           hasValue={hasValue}
           ref={combinedRef}
           id={id}
@@ -166,6 +171,7 @@ const Input = React.forwardRef(
           onClick={onClick}
           autoComplete={autocomplete ? 'on' : 'off'}
           defaultValue={defaultValue}
+          value={value}
           hasIcon={typeof icon !== 'undefined'}
           width={width}
           placeholder={placeholder}

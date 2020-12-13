@@ -1,19 +1,20 @@
-import React, {useState} from 'react';
-import {action} from '@storybook/addon-actions';
+import React, { useState } from 'react';
+import { action } from '@storybook/addon-actions';
 import BaseStyles from 'App/BaseStyles';
 import NormalizeStyles from 'App/NormalizeStyles';
-import {theme} from 'App/ThemeStyles';
+import theme from 'App/ThemeStyles';
 import produce from 'immer';
-import styled, {ThemeProvider} from 'styled-components';
-import Checklist, {ChecklistItem} from '.';
+import styled, { ThemeProvider } from 'styled-components';
+import NOOP from 'shared/utils/noop';
+import Checklist, { ChecklistItem } from '.';
 
 export default {
   component: Checklist,
   title: 'Checklist',
   parameters: {
     backgrounds: [
-      {name: 'gray', value: '#f8f8f8', default: true},
-      {name: 'white', value: '#ffffff'},
+      { name: 'gray', value: '#f8f8f8', default: true },
+      { name: 'white', value: '#ffffff' },
     ],
   },
 };
@@ -115,7 +116,6 @@ export const Default = () => {
               ]);
             }}
             onDeleteItem={itemID => {
-              console.log(`itemID ${itemID}`);
               setItems(items.filter(item => item.id !== itemID));
             }}
             onChangeItemName={(itemID, currentName) => {
@@ -133,18 +133,18 @@ export const Default = () => {
             }}
             onToggleItem={onToggleItem}
           >
-            {items.map((item, idx) => (
+            {items.map(item => (
               <ChecklistItem
                 key={item.id}
                 wrapperProps={{}}
                 handleProps={{}}
-                checklistID='id'
+                checklistID="id"
                 itemID={item.id}
                 name={item.name}
                 complete={item.complete}
-                onDeleteItem={() => {}}
-                onChangeName={() => {}}
-                onToggleItem={() => {}}
+                onDeleteItem={NOOP}
+                onChangeName={NOOP}
+                onToggleItem={NOOP}
               />
             ))}
           </Checklist>

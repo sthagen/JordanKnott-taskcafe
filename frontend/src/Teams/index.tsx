@@ -1,23 +1,22 @@
-import React, { useState, useContext, useEffect } from 'react';
-import styled, { css } from 'styled-components/macro';
-import { MENU_TYPES } from 'shared/components/TopNavbar';
+import React, { useState, useEffect } from 'react';
+import styled from 'styled-components/macro';
 import GlobalTopNavbar from 'App/TopNavbar';
 import updateApolloCache from 'shared/utils/cache';
-import { Route, Switch, useRouteMatch } from 'react-router';
-import Members from './Members';
-import Projects from './Projects';
-
+import { Route, Switch, useRouteMatch, Redirect, useParams, useHistory } from 'react-router';
 import {
   useGetTeamQuery,
   useDeleteTeamMutation,
   GetProjectsDocument,
   GetProjectsQuery,
 } from 'shared/generated/graphql';
-import { useParams, useHistory, useLocation } from 'react-router';
 import { usePopup, Popup } from 'shared/components/PopupMenu';
 import { History } from 'history';
 import produce from 'immer';
 import { TeamSettings, DeleteConfirm, DELETE_INFO } from 'shared/components/ProjectSettings';
+import { PermissionObjectType, PermissionLevel, useCurrentUser } from 'App/context';
+import NOOP from 'shared/utils/noop';
+import Members from './Members';
+import Projects from './Projects';
 
 const OuterWrapper = styled.div`
   display: flex;
@@ -58,7 +57,7 @@ export const TeamPopup: React.FC<TeamPopupProps> = ({ history, name, teamID }) =
       <Popup title={null} tab={0}>
         <TeamSettings
           onDeleteTeam={() => {
-            setTab(1, 340);
+            setTab(1, { width: 340 });
           }}
         />
       </Popup>
@@ -86,20 +85,36 @@ type TeamsRouteProps = {
 const Teams = () => {
   const { teamID } = useParams<TeamsRouteProps>();
   const history = useHistory();
-  const { loading, data } = useGetTeamQuery({ variables: { teamID } });
+  const { loading, data } = useGetTeamQuery({
+    variables: { teamID },
+    onCompleted: resp => {
+      document.title = `${resp.findTeam.name} | Taskcafé`;
+    },
+  });
+  const { user } = useCurrentUser();
   const [currentTab, setCurrentTab] = useState(0);
   const match = useRouteMatch();
-  useEffect(() => {
-    document.title = 'Citadel | Teams';
-  }, []);
   if (loading) {
     return (
-      <>
-        <span>loading</span>
-      </>
+      <GlobalTopNavbar
+        menuType={[
+          { name: 'Projects', link: `${match.url}` },
+          { name: 'Members', link: `${match.url}/members` },
+        ]}
+        currentTab={currentTab}
+        onSetTab={tab => {
+          setCurrentTab(tab);
+        }}
+        onSaveProjectName={NOOP}
+        projectID={null}
+        name={null}
+      />
     );
   }
-  if (data) {
+  if (data && user) {
+    if (!user.isVisible(PermissionLevel.TEAM, PermissionObjectType.TEAM, teamID)) {
+      return <Redirect to="/" />;
+    }
     return (
       <>
         <GlobalTopNavbar
@@ -112,7 +127,7 @@ const Teams = () => {
             setCurrentTab(tab);
           }}
           popupContent={<TeamPopup history={history} name={data.findTeam.name} teamID={teamID} />}
-          onSaveProjectName={() => {}}
+          onSaveProjectName={NOOP}
           projectID={null}
           name={data.findTeam.name}
         />

@@ -1,10 +1,10 @@
-import React, { useRef } from 'react';
-import Admin from '.';
-import { theme } from 'App/ThemeStyles';
-import NormalizeStyles from 'App/NormalizeStyles';
-import BaseStyles from 'App/BaseStyles';
+import React from 'react';
 import { ThemeProvider } from 'styled-components';
 import { action } from '@storybook/addon-actions';
+import theme from 'App/ThemeStyles';
+import NormalizeStyles from 'App/NormalizeStyles';
+import BaseStyles from 'App/BaseStyles';
+import Admin from '.';
 
 export default {
   component: Admin,
@@ -25,6 +25,7 @@ export const Default = () => {
       <ThemeProvider theme={theme}>
         <Admin
           onInviteUser={action('invite user')}
+          canInviteUser
           initialTab={1}
           onUpdateUserPassword={action('update user password')}
           onDeleteUser={action('delete user')}

@@ -8,6 +8,7 @@ query findTask($taskID: UUID!) {
     complete
     taskGroup {
       id
+      name
     }
     badges {
       checklist {
@@ -49,6 +50,17 @@ query findTask($taskID: UUID!) {
         url
         initials
         bgColor
+      }
+    }
+  }
+  me {
+    user {
+      id
+      fullName
+      profileIcon {
+        initials
+        bgColor
+        url
       }
     }
   }

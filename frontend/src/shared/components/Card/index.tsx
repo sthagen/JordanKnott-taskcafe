@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import TaskAssignee from 'shared/components/TaskAssignee';
-import { faPencilAlt, faList } from '@fortawesome/free-solid-svg-icons';
-import { faClock, faCheckSquare, faEye } from '@fortawesome/free-regular-svg-icons';
+import { Pencil, Eye, List } from 'shared/icons';
 import {
   EditorTextarea,
+  CardMember,
   EditorContent,
+  ChecklistIcon,
   CompleteIcon,
   DescriptionBadge,
   DueDateCardBadge,
@@ -19,6 +18,7 @@ import {
   ListCardLabels,
   ListCardLabel,
   ListCardLabelText,
+  ListCardLabelsWrapper,
   ListCardOperation,
   CardTitle,
   CardMembers,
@@ -39,6 +39,7 @@ type Props = {
   taskID: string;
   taskGroupID: string;
   complete?: boolean;
+  position?: string | number;
   onContextMenu?: ($target: React.RefObject<HTMLElement>, taskID: string, taskGroupID: string) => void;
   onClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
   description?: null | string;
@@ -76,6 +77,7 @@ const Card = React.forwardRef(
       dueDate,
       description,
       checklists,
+      position,
       watched,
       members,
       labelVariant,
@@ -151,39 +153,42 @@ const Card = React.forwardRef(
                 }
               }}
             >
-              <FontAwesomeIcon onClick={onOperationClick} color="#c2c6dc" size="xs" icon={faPencilAlt} />
+              <Pencil width={8} height={8} />
             </ListCardOperation>
           )}
           <ListCardDetails complete={complete ?? false}>
-            <ListCardLabels
-              toggleLabels={toggleLabels}
-              toggleDirection={toggleDirection}
-              onClick={e => {
-                e.stopPropagation();
-                if (onCardLabelClick) {
-                  onCardLabelClick();
-                }
-              }}
-            >
-              {labels &&
-                labels
-                  .slice()
-                  .sort((a, b) => a.labelColor.position - b.labelColor.position)
-                  .map(label => (
-                    <ListCardLabel
-                      onAnimationEnd={() => {
-                        if (setToggleLabels) {
-                          setToggleLabels(false);
-                        }
-                      }}
-                      variant={labelVariant ?? 'large'}
-                      color={label.labelColor.colorHex}
-                      key={label.id}
-                    >
-                      <ListCardLabelText>{label.name}</ListCardLabelText>
-                    </ListCardLabel>
-                  ))}
-            </ListCardLabels>
+            {labels && labels.length !== 0 && (
+              <ListCardLabelsWrapper>
+                <ListCardLabels
+                  toggleLabels={toggleLabels}
+                  toggleDirection={toggleDirection}
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (onCardLabelClick) {
+                      onCardLabelClick();
+                    }
+                  }}
+                >
+                  {labels
+                    .slice()
+                    .sort((a, b) => a.labelColor.position - b.labelColor.position)
+                    .map(label => (
+                      <ListCardLabel
+                        onAnimationEnd={() => {
+                          if (setToggleLabels) {
+                            setToggleLabels(false);
+                          }
+                        }}
+                        variant={labelVariant ?? 'large'}
+                        color={label.labelColor.colorHex}
+                        key={label.id}
+                      >
+                        <ListCardLabelText>{label.name}</ListCardLabelText>
+                      </ListCardLabel>
+                    ))}
+                </ListCardLabels>
+              </ListCardLabelsWrapper>
+            )}
             {editable ? (
               <EditorContent>
                 {complete && <CompleteIcon width={16} height={16} />}
@@ -205,39 +210,46 @@ const Card = React.forwardRef(
             ) : (
               <CardTitle>
                 {complete && <CompleteIcon width={16} height={16} />}
-                {title}
+                {`${title}${position ? ` - ${position}` : ''}`}
               </CardTitle>
             )}
             <ListCardBadges>
               {watched && (
                 <ListCardBadge>
-                  <FontAwesomeIcon color="#6b778c" icon={faEye} size="xs" />
+                  <Eye width={8} height={8} />
                 </ListCardBadge>
               )}
               {dueDate && (
                 <DueDateCardBadge isPastDue={dueDate.isPastDue}>
-                  <ClockIcon color={dueDate.isPastDue ? '#fff' : '#6b778c'} icon={faClock} size="xs" />
+                  <ClockIcon color={dueDate.isPastDue ? '#fff' : '#6b778c'} width={8} height={8} />
                   <ListCardBadgeText>{dueDate.formattedDate}</ListCardBadgeText>
                 </DueDateCardBadge>
               )}
               {description && (
                 <DescriptionBadge>
-                  <FontAwesomeIcon color="#6b778c" icon={faList} size="xs" />
+                  <List width={8} height={8} />
                 </DescriptionBadge>
               )}
               {checklists && (
                 <ListCardBadge>
-                  <FontAwesomeIcon color="#6b778c" icon={faCheckSquare} size="xs" />
-                  <ListCardBadgeText>{`${checklists.complete}/${checklists.total}`}</ListCardBadgeText>
+                  <ChecklistIcon
+                    color={checklists.complete === checklists.total ? 'success' : 'normal'}
+                    width={8}
+                    height={8}
+                  />
+                  <ListCardBadgeText color={checklists.complete === checklists.total ? 'success' : 'normal'}>
+                    {`${checklists.complete}/${checklists.total}`}
+                  </ListCardBadgeText>
                 </ListCardBadge>
               )}
             </ListCardBadges>
             <CardMembers>
               {members &&
-                members.map(member => (
-                  <TaskAssignee
+                members.map((member, idx) => (
+                  <CardMember
                     key={member.id}
                     size={28}
+                    zIndex={members.length - idx}
                     member={member}
                     onMemberProfile={$target => {
                       if (onCardMemberClick) {

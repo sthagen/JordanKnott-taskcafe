@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jordanknott/project-citadel/api/internal/db"
+	"github.com/jordanknott/taskcafe/internal/auth"
+	"github.com/jordanknott/taskcafe/internal/db"
 	log "github.com/sirupsen/logrus"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 	"golang.org/x/crypto/bcrypt"
@@ -22,9 +23,41 @@ func (r *labelColorResolver) ID(ctx context.Context, obj *db.LabelColor) (uuid.U
 }
 
 func (r *mutationResolver) CreateProject(ctx context.Context, input NewProject) (*db.Project, error) {
+	userID, ok := GetUserID(ctx)
+	if !ok {
+		return &db.Project{}, errors.New("user id is missing")
+	}
 	createdAt := time.Now().UTC()
-	project, err := r.Repository.CreateProject(ctx, db.CreateProjectParams{input.UserID, input.TeamID, createdAt, input.Name})
-	return &project, err
+	log.WithFields(log.Fields{"name": input.Name, "teamID": input.TeamID}).Info("creating new project")
+	var project db.Project
+	var err error
+	if input.TeamID == nil {
+		project, err = r.Repository.CreatePersonalProject(ctx, db.CreatePersonalProjectParams{
+			CreatedAt: createdAt,
+			Name:      input.Name,
+		})
+		if err != nil {
+			log.WithError(err).Error("error while creating project")
+			return &db.Project{}, err
+		}
+		log.WithFields(log.Fields{"userID": userID, "projectID": project.ProjectID}).Info("creating personal project link")
+	} else {
+		project, err = r.Repository.CreateTeamProject(ctx, db.CreateTeamProjectParams{
+			CreatedAt: createdAt,
+			Name:      input.Name,
+			TeamID:    *input.TeamID,
+		})
+		if err != nil {
+			log.WithError(err).Error("error while creating project")
+			return &db.Project{}, err
+		}
+	}
+	_, err = r.Repository.CreateProjectMember(ctx, db.CreateProjectMemberParams{ProjectID: project.ProjectID, UserID: userID, AddedAt: createdAt, RoleCode: "admin"})
+	if err != nil {
+		log.WithError(err).Error("error while creating initial project member")
+		return &db.Project{}, err
+	}
+	return &project, nil
 }
 
 func (r *mutationResolver) DeleteProject(ctx context.Context, input DeleteProject) (*DeleteProjectPayload, error) {
@@ -146,9 +179,6 @@ func (r *mutationResolver) DeleteProjectMember(ctx context.Context, input Delete
 }
 
 func (r *mutationResolver) UpdateProjectMemberRole(ctx context.Context, input UpdateProjectMemberRole) (*UpdateProjectMemberRolePayload, error) {
-	if input.RoleCode == RoleCodeOwner {
-		return &UpdateProjectMemberRolePayload{Ok: false}, errors.New("can not set project owner through this mutation")
-	}
 	user, err := r.Repository.GetUserAccountByID(ctx, input.UserID)
 	if err != nil {
 		log.WithError(err).Error("get user account")
@@ -179,89 +209,26 @@ func (r *mutationResolver) UpdateProjectMemberRole(ctx context.Context, input Up
 	return &UpdateProjectMemberRolePayload{Ok: true, Member: &member}, err
 }
 
-func (r *mutationResolver) SetProjectOwner(ctx context.Context, input SetProjectOwner) (*SetProjectOwnerPayload, error) {
-	project, err := r.Repository.GetProjectByID(ctx, input.ProjectID)
-	if project.Owner == input.OwnerID {
-		return &SetProjectOwnerPayload{Ok: false}, errors.New("new project owner is already project owner")
-	}
-	_, err = r.Repository.SetProjectOwner(ctx, db.SetProjectOwnerParams{Owner: input.OwnerID, ProjectID: input.ProjectID})
-	if err != nil {
-		return &SetProjectOwnerPayload{Ok: false}, err
-	}
-	err = r.Repository.DeleteProjectMember(ctx, db.DeleteProjectMemberParams{ProjectID: input.ProjectID, UserID: input.OwnerID})
-	if err != nil {
-		return &SetProjectOwnerPayload{Ok: false}, err
-	}
-
-	addedAt := time.Now().UTC()
-	_, err = r.Repository.CreateProjectMember(ctx, db.CreateProjectMemberParams{ProjectID: input.ProjectID,
-		UserID: project.Owner, RoleCode: RoleCodeAdmin.String(), AddedAt: addedAt})
-	if err != nil {
-		return &SetProjectOwnerPayload{Ok: false}, err
-	}
-
-	oldUser, err := r.Repository.GetUserAccountByID(ctx, project.Owner)
-	var url *string
-	if oldUser.ProfileAvatarUrl.Valid {
-		url = &oldUser.ProfileAvatarUrl.String
-	}
-	profileIcon := &ProfileIcon{url, &oldUser.Initials, &oldUser.ProfileBgColor}
-	oldUserRole := db.Role{Code: "admin", Name: "Admin"}
-	oldMember := &Member{
-		ID:          oldUser.UserID,
-		Username:    oldUser.Username,
-		FullName:    oldUser.FullName,
-		ProfileIcon: profileIcon,
-		Role:        &oldUserRole,
-	}
-
-	newUser, err := r.Repository.GetUserAccountByID(ctx, input.OwnerID)
-
-	if newUser.ProfileAvatarUrl.Valid {
-		url = &newUser.ProfileAvatarUrl.String
-	}
-	profileIcon = &ProfileIcon{url, &newUser.Initials, &newUser.ProfileBgColor}
-	newUserRole := db.Role{Code: "owner", Name: "Owner"}
-	newMember := &Member{
-		ID:          newUser.UserID,
-		Username:    newUser.Username,
-		FullName:    newUser.FullName,
-		ProfileIcon: profileIcon,
-		Role:        &newUserRole,
-	}
-
-	return &SetProjectOwnerPayload{
-		Ok:        true,
-		PrevOwner: oldMember,
-		NewOwner:  newMember,
-	}, nil
-}
-
 func (r *mutationResolver) CreateTask(ctx context.Context, input NewTask) (*db.Task, error) {
-	taskGroupID, err := uuid.Parse(input.TaskGroupID)
 	createdAt := time.Now().UTC()
+	log.WithFields(log.Fields{"positon": input.Position, "taskGroupID": input.TaskGroupID}).Info("creating task")
+	task, err := r.Repository.CreateTask(ctx, db.CreateTaskParams{input.TaskGroupID, createdAt, input.Name, input.Position})
 	if err != nil {
+		log.WithError(err).Error("issue while creating task")
 		return &db.Task{}, err
 	}
-
-	task, err := r.Repository.CreateTask(ctx, db.CreateTaskParams{taskGroupID, createdAt, input.Name, input.Position})
-	return &task, err
+	return &task, nil
 }
 
 func (r *mutationResolver) DeleteTask(ctx context.Context, input DeleteTaskInput) (*DeleteTaskPayload, error) {
-	taskID, err := uuid.Parse(input.TaskID)
-	if err != nil {
-		return &DeleteTaskPayload{}, err
-	}
-
 	log.WithFields(log.Fields{
-		"taskID": taskID.String(),
+		"taskID": input.TaskID,
 	}).Info("deleting task")
-	err = r.Repository.DeleteTaskByID(ctx, taskID)
+	err := r.Repository.DeleteTaskByID(ctx, input.TaskID)
 	if err != nil {
 		return &DeleteTaskPayload{}, err
 	}
-	return &DeleteTaskPayload{taskID.String()}, nil
+	return &DeleteTaskPayload{input.TaskID}, nil
 }
 
 func (r *mutationResolver) UpdateTaskDescription(ctx context.Context, input UpdateTaskDescriptionInput) (*db.Task, error) {
@@ -280,16 +247,13 @@ func (r *mutationResolver) UpdateTaskLocation(ctx context.Context, input NewTask
 }
 
 func (r *mutationResolver) UpdateTaskName(ctx context.Context, input UpdateTaskName) (*db.Task, error) {
-	taskID, err := uuid.Parse(input.TaskID)
-	if err != nil {
-		return &db.Task{}, err
-	}
-	task, err := r.Repository.UpdateTaskName(ctx, db.UpdateTaskNameParams{taskID, input.Name})
+	task, err := r.Repository.UpdateTaskName(ctx, db.UpdateTaskNameParams{input.TaskID, input.Name})
 	return &task, err
 }
 
 func (r *mutationResolver) SetTaskComplete(ctx context.Context, input SetTaskComplete) (*db.Task, error) {
-	task, err := r.Repository.SetTaskComplete(ctx, db.SetTaskCompleteParams{TaskID: input.TaskID, Complete: input.Complete})
+	completedAt := time.Now().UTC()
+	task, err := r.Repository.SetTaskComplete(ctx, db.SetTaskCompleteParams{TaskID: input.TaskID, Complete: input.Complete, CompletedAt: sql.NullTime{Time: completedAt, Valid: true}})
 	if err != nil {
 		return &db.Task{}, err
 	}
@@ -322,6 +286,7 @@ func (r *mutationResolver) AssignTask(ctx context.Context, input *AssignTaskInpu
 	if err != nil {
 		return &db.Task{}, err
 	}
+	// r.NotificationQueue.TaskMemberWasAdded(assignedTask.TaskID, userID, assignedTask.UserID)
 	task, err := r.Repository.GetTaskByID(ctx, input.TaskID)
 	return &task, err
 }
@@ -388,6 +353,16 @@ func (r *mutationResolver) CreateTaskChecklistItem(ctx context.Context, input Cr
 	return &taskChecklistItem, nil
 }
 
+func (r *mutationResolver) UpdateTaskChecklistLocation(ctx context.Context, input UpdateTaskChecklistLocation) (*UpdateTaskChecklistLocationPayload, error) {
+	checklist, err := r.Repository.UpdateTaskChecklistPosition(ctx, db.UpdateTaskChecklistPositionParams{Position: input.Position, TaskChecklistID: input.TaskChecklistID})
+
+	if err != nil {
+		return &UpdateTaskChecklistLocationPayload{}, err
+	}
+
+	return &UpdateTaskChecklistLocationPayload{Checklist: &checklist}, nil
+}
+
 func (r *mutationResolver) UpdateTaskChecklistItemName(ctx context.Context, input UpdateTaskChecklistItemName) (*db.TaskChecklistItem, error) {
 	task, err := r.Repository.UpdateTaskChecklistItemName(ctx, db.UpdateTaskChecklistItemNameParams{TaskChecklistItemID: input.TaskChecklistItemID,
 		Name: input.Name,
@@ -427,34 +402,20 @@ func (r *mutationResolver) DeleteTaskChecklistItem(ctx context.Context, input De
 	}, err
 }
 
-func (r *mutationResolver) UpdateTaskChecklistLocation(ctx context.Context, input UpdateTaskChecklistLocation) (*UpdateTaskChecklistLocationPayload, error) {
-	checklist, err := r.Repository.UpdateTaskChecklistPosition(ctx, db.UpdateTaskChecklistPositionParams{Position: input.Position, TaskChecklistID: input.ChecklistID})
-
-	if err != nil {
-		return &UpdateTaskChecklistLocationPayload{}, err
-	}
-
-	return &UpdateTaskChecklistLocationPayload{Checklist: &checklist}, nil
-}
-
 func (r *mutationResolver) UpdateTaskChecklistItemLocation(ctx context.Context, input UpdateTaskChecklistItemLocation) (*UpdateTaskChecklistItemLocationPayload, error) {
-	currentChecklistItem, err := r.Repository.GetTaskChecklistItemByID(ctx, input.ChecklistItemID)
+	currentChecklistItem, err := r.Repository.GetTaskChecklistItemByID(ctx, input.TaskChecklistItemID)
 
-	checklistItem, err := r.Repository.UpdateTaskChecklistItemLocation(ctx, db.UpdateTaskChecklistItemLocationParams{TaskChecklistID: input.ChecklistID, TaskChecklistItemID: input.ChecklistItemID, Position: input.Position})
+	checklistItem, err := r.Repository.UpdateTaskChecklistItemLocation(ctx, db.UpdateTaskChecklistItemLocationParams{TaskChecklistID: input.TaskChecklistID, TaskChecklistItemID: input.TaskChecklistItemID, Position: input.Position})
 	if err != nil {
 		return &UpdateTaskChecklistItemLocationPayload{}, err
 	}
-	return &UpdateTaskChecklistItemLocationPayload{PrevChecklistID: currentChecklistItem.TaskChecklistID, ChecklistID: input.ChecklistID, ChecklistItem: &checklistItem}, err
+	return &UpdateTaskChecklistItemLocationPayload{PrevChecklistID: currentChecklistItem.TaskChecklistID, TaskChecklistID: input.TaskChecklistID, ChecklistItem: &checklistItem}, err
 }
 
 func (r *mutationResolver) CreateTaskGroup(ctx context.Context, input NewTaskGroup) (*db.TaskGroup, error) {
 	createdAt := time.Now().UTC()
-	projectID, err := uuid.Parse(input.ProjectID)
-	if err != nil {
-		return &db.TaskGroup{}, err
-	}
 	project, err := r.Repository.CreateTaskGroup(ctx,
-		db.CreateTaskGroupParams{projectID, createdAt, input.Name, input.Position})
+		db.CreateTaskGroupParams{input.ProjectID, createdAt, input.Name, input.Position})
 	return &project, err
 }
 
@@ -488,6 +449,111 @@ func (r *mutationResolver) DeleteTaskGroup(ctx context.Context, input DeleteTask
 		return &DeleteTaskGroupPayload{}, err
 	}
 	return &DeleteTaskGroupPayload{true, int(deletedTasks + deletedTaskGroups), &taskGroup}, nil
+}
+
+func (r *mutationResolver) DuplicateTaskGroup(ctx context.Context, input DuplicateTaskGroup) (*DuplicateTaskGroupPayload, error) {
+	createdAt := time.Now().UTC()
+	taskGroup, err := r.Repository.CreateTaskGroup(ctx, db.CreateTaskGroupParams{ProjectID: input.ProjectID, Position: input.Position, Name: input.Name, CreatedAt: createdAt})
+	if err != nil {
+		return &DuplicateTaskGroupPayload{}, err
+	}
+
+	originalTasks, err := r.Repository.GetTasksForTaskGroupID(ctx, input.TaskGroupID)
+	if err != nil && err != sql.ErrNoRows {
+		return &DuplicateTaskGroupPayload{}, err
+	}
+	for _, originalTask := range originalTasks {
+		task, err := r.Repository.CreateTaskAll(ctx, db.CreateTaskAllParams{
+			TaskGroupID: taskGroup.TaskGroupID, CreatedAt: createdAt, Name: originalTask.Name, Position: originalTask.Position,
+			Complete: originalTask.Complete, DueDate: originalTask.DueDate, Description: originalTask.Description})
+		if err != nil {
+			return &DuplicateTaskGroupPayload{}, err
+		}
+		members, err := r.Repository.GetAssignedMembersForTask(ctx, originalTask.TaskID)
+		if err != nil {
+			return &DuplicateTaskGroupPayload{}, err
+		}
+		for _, member := range members {
+			_, err := r.Repository.CreateTaskAssigned(ctx, db.CreateTaskAssignedParams{
+				TaskID: task.TaskID, UserID: member.UserID, AssignedDate: member.AssignedDate})
+			if err != nil {
+				return &DuplicateTaskGroupPayload{}, err
+			}
+		}
+		labels, err := r.Repository.GetTaskLabelsForTaskID(ctx, originalTask.TaskID)
+		if err != nil {
+			return &DuplicateTaskGroupPayload{}, err
+		}
+		for _, label := range labels {
+			_, err := r.Repository.CreateTaskLabelForTask(ctx, db.CreateTaskLabelForTaskParams{
+				TaskID: task.TaskID, ProjectLabelID: label.ProjectLabelID, AssignedDate: label.AssignedDate})
+			if err != nil {
+				return &DuplicateTaskGroupPayload{}, err
+			}
+		}
+		checklists, err := r.Repository.GetTaskChecklistsForTask(ctx, originalTask.TaskID)
+		if err != nil {
+			return &DuplicateTaskGroupPayload{}, err
+		}
+		for _, checklist := range checklists {
+			newChecklist, err := r.Repository.CreateTaskChecklist(ctx, db.CreateTaskChecklistParams{
+				TaskID: task.TaskID, Name: checklist.Name, CreatedAt: createdAt, Position: checklist.Position})
+			if err != nil {
+				return &DuplicateTaskGroupPayload{}, err
+			}
+			checklistItems, err := r.Repository.GetTaskChecklistItemsForTaskChecklist(ctx, checklist.TaskChecklistID)
+			if err != nil {
+				return &DuplicateTaskGroupPayload{}, err
+			}
+			for _, checklistItem := range checklistItems {
+				item, err := r.Repository.CreateTaskChecklistItem(ctx, db.CreateTaskChecklistItemParams{
+					TaskChecklistID: newChecklist.TaskChecklistID,
+					CreatedAt:       createdAt,
+					Name:            checklistItem.Name,
+					Position:        checklist.Position,
+				})
+				if checklistItem.Complete {
+					r.Repository.SetTaskChecklistItemComplete(ctx, db.SetTaskChecklistItemCompleteParams{TaskChecklistItemID: item.TaskChecklistItemID, Complete: true})
+				}
+				if err != nil {
+					return &DuplicateTaskGroupPayload{}, err
+				}
+			}
+
+		}
+	}
+	if err != nil {
+		return &DuplicateTaskGroupPayload{}, err
+	}
+	return &DuplicateTaskGroupPayload{TaskGroup: &taskGroup}, err
+}
+
+func (r *mutationResolver) SortTaskGroup(ctx context.Context, input SortTaskGroup) (*SortTaskGroupPayload, error) {
+	tasks := []db.Task{}
+	for _, task := range input.Tasks {
+		t, err := r.Repository.UpdateTaskPosition(ctx, db.UpdateTaskPositionParams{TaskID: task.TaskID, Position: task.Position})
+		if err != nil {
+			return &SortTaskGroupPayload{}, err
+		}
+		tasks = append(tasks, t)
+	}
+	return &SortTaskGroupPayload{Tasks: tasks, TaskGroupID: input.TaskGroupID}, nil
+}
+
+func (r *mutationResolver) DeleteTaskGroupTasks(ctx context.Context, input DeleteTaskGroupTasks) (*DeleteTaskGroupTasksPayload, error) {
+	tasks, err := r.Repository.GetTasksForTaskGroupID(ctx, input.TaskGroupID)
+	if err != nil && err != sql.ErrNoRows {
+		return &DeleteTaskGroupTasksPayload{}, err
+	}
+	removedTasks := []uuid.UUID{}
+	for _, task := range tasks {
+		err = r.Repository.DeleteTaskByID(ctx, task.TaskID)
+		if err != nil {
+			return &DeleteTaskGroupTasksPayload{}, err
+		}
+		removedTasks = append(removedTasks, task.TaskID)
+	}
+	return &DeleteTaskGroupTasksPayload{TaskGroupID: input.TaskGroupID, Tasks: removedTasks}, nil
 }
 
 func (r *mutationResolver) AddTaskLabel(ctx context.Context, input *AddTaskLabelInput) (*db.Task, error) {
@@ -574,71 +640,21 @@ func (r *mutationResolver) DeleteTeam(ctx context.Context, input DeleteTeam) (*D
 }
 
 func (r *mutationResolver) CreateTeam(ctx context.Context, input NewTeam) (*db.Team, error) {
-	userID, ok := GetUserID(ctx)
+	_, role, ok := GetUser(ctx)
 	if !ok {
-		return &db.Team{}, fmt.Errorf("internal server error")
+		return &db.Team{}, nil
 	}
-	createdAt := time.Now().UTC()
-	team, err := r.Repository.CreateTeam(ctx, db.CreateTeamParams{OrganizationID: input.OrganizationID, CreatedAt: createdAt, Name: input.Name, Owner: userID})
-	return &team, err
-}
-
-func (r *mutationResolver) SetTeamOwner(ctx context.Context, input SetTeamOwner) (*SetTeamOwnerPayload, error) {
-	team, err := r.Repository.GetTeamByID(ctx, input.TeamID)
-	if team.Owner == input.UserID {
-		return &SetTeamOwnerPayload{Ok: false}, errors.New("new project owner is already project owner")
+	if role == auth.RoleAdmin {
+		createdAt := time.Now().UTC()
+		team, err := r.Repository.CreateTeam(ctx, db.CreateTeamParams{OrganizationID: input.OrganizationID, CreatedAt: createdAt, Name: input.Name})
+		return &team, err
 	}
-	_, err = r.Repository.SetTeamOwner(ctx, db.SetTeamOwnerParams{Owner: input.UserID, TeamID: input.TeamID})
-	if err != nil {
-		return &SetTeamOwnerPayload{Ok: false}, errors.New("new project owner is already project owner")
+	return &db.Team{}, &gqlerror.Error{
+		Message: "You must be an organization admin to create new teams",
+		Extensions: map[string]interface{}{
+			"code": "1-400",
+		},
 	}
-	err = r.Repository.DeleteTeamMember(ctx, db.DeleteTeamMemberParams{TeamID: input.TeamID, UserID: input.UserID})
-	if err != nil {
-		return &SetTeamOwnerPayload{Ok: false}, errors.New("new project owner is already project owner")
-	}
-
-	addedAt := time.Now().UTC()
-	_, err = r.Repository.CreateTeamMember(ctx, db.CreateTeamMemberParams{TeamID: input.TeamID,
-		UserID: team.Owner, RoleCode: RoleCodeAdmin.String(), Addeddate: addedAt})
-	if err != nil {
-		return &SetTeamOwnerPayload{Ok: false}, errors.New("new project owner is already project owner")
-	}
-
-	oldUser, err := r.Repository.GetUserAccountByID(ctx, team.Owner)
-	var url *string
-	if oldUser.ProfileAvatarUrl.Valid {
-		url = &oldUser.ProfileAvatarUrl.String
-	}
-	profileIcon := &ProfileIcon{url, &oldUser.Initials, &oldUser.ProfileBgColor}
-	oldUserRole := db.Role{Code: "admin", Name: "Admin"}
-	oldMember := &Member{
-		ID:          oldUser.UserID,
-		Username:    oldUser.Username,
-		FullName:    oldUser.FullName,
-		ProfileIcon: profileIcon,
-		Role:        &oldUserRole,
-	}
-
-	newUser, err := r.Repository.GetUserAccountByID(ctx, input.UserID)
-
-	if newUser.ProfileAvatarUrl.Valid {
-		url = &newUser.ProfileAvatarUrl.String
-	}
-	profileIcon = &ProfileIcon{url, &newUser.Initials, &newUser.ProfileBgColor}
-	newUserRole := db.Role{Code: "owner", Name: "Owner"}
-	newMember := &Member{
-		ID:          newUser.UserID,
-		Username:    newUser.Username,
-		FullName:    newUser.FullName,
-		ProfileIcon: profileIcon,
-		Role:        &newUserRole,
-	}
-
-	return &SetTeamOwnerPayload{
-		Ok:        true,
-		PrevOwner: oldMember,
-		NewOwner:  newMember,
-	}, nil
 }
 
 func (r *mutationResolver) CreateTeamMember(ctx context.Context, input CreateTeamMember) (*CreateTeamMemberPayload, error) {
@@ -669,9 +685,6 @@ func (r *mutationResolver) CreateTeamMember(ctx context.Context, input CreateTea
 }
 
 func (r *mutationResolver) UpdateTeamMemberRole(ctx context.Context, input UpdateTeamMemberRole) (*UpdateTeamMemberRolePayload, error) {
-	if input.RoleCode == RoleCodeOwner || input.RoleCode == RoleCodeObserver {
-		return &UpdateTeamMemberRolePayload{Ok: false}, errors.New("can not set project owner through this mutation")
-	}
 	user, err := r.Repository.GetUserAccountByID(ctx, input.UserID)
 	if err != nil {
 		log.WithError(err).Error("get user account")
@@ -699,29 +712,12 @@ func (r *mutationResolver) UpdateTeamMemberRole(ctx context.Context, input Updat
 	member := Member{ID: user.UserID, FullName: user.FullName, ProfileIcon: profileIcon,
 		Role: &db.Role{Code: role.Code, Name: role.Name},
 	}
-	return &UpdateTeamMemberRolePayload{Ok: true, Member: &member}, err
+	return &UpdateTeamMemberRolePayload{Ok: true, Member: &member, TeamID: input.TeamID}, err
 }
 
 func (r *mutationResolver) DeleteTeamMember(ctx context.Context, input DeleteTeamMember) (*DeleteTeamMemberPayload, error) {
-	ownedProjects, err := r.Repository.GetOwnedTeamProjectsForUserID(ctx, db.GetOwnedTeamProjectsForUserIDParams{TeamID: input.TeamID, Owner: input.UserID})
-	if err != nil {
-		return &DeleteTeamMemberPayload{}, err
-	}
-
-	_, err = r.Repository.GetTeamMemberByID(ctx, db.GetTeamMemberByIDParams{TeamID: input.TeamID, UserID: input.UserID})
-	if err != nil {
-		return &DeleteTeamMemberPayload{}, err
-	}
-	err = r.Repository.DeleteTeamMember(ctx, db.DeleteTeamMemberParams{TeamID: input.TeamID, UserID: input.UserID})
-	if err != nil {
-		return &DeleteTeamMemberPayload{}, err
-	}
-	if input.NewOwnerID != nil {
-		for _, projectID := range ownedProjects {
-			_, err = r.Repository.SetProjectOwner(ctx, db.SetProjectOwnerParams{ProjectID: projectID, Owner: *input.NewOwnerID})
-		}
-	}
-	return &DeleteTeamMemberPayload{TeamID: input.TeamID, UserID: input.UserID}, nil
+	err := r.Repository.DeleteTeamMember(ctx, db.DeleteTeamMemberParams{TeamID: input.TeamID, UserID: input.UserID})
+	return &DeleteTeamMemberPayload{TeamID: input.TeamID, UserID: input.UserID}, err
 }
 
 func (r *mutationResolver) CreateRefreshToken(ctx context.Context, input NewRefreshToken) (*db.RefreshToken, error) {
@@ -733,6 +729,18 @@ func (r *mutationResolver) CreateRefreshToken(ctx context.Context, input NewRefr
 }
 
 func (r *mutationResolver) CreateUserAccount(ctx context.Context, input NewUserAccount) (*db.UserAccount, error) {
+	_, role, ok := GetUser(ctx)
+	if !ok {
+		return &db.UserAccount{}, nil
+	}
+	if role != auth.RoleAdmin {
+		return &db.UserAccount{}, &gqlerror.Error{
+			Message: "Must be an organization admin",
+			Extensions: map[string]interface{}{
+				"code": "0-400",
+			},
+		}
+	}
 	createdAt := time.Now().UTC()
 	hashedPwd, err := bcrypt.GenerateFromPassword([]byte(input.Password), 14)
 	if err != nil {
@@ -751,35 +759,25 @@ func (r *mutationResolver) CreateUserAccount(ctx context.Context, input NewUserA
 }
 
 func (r *mutationResolver) DeleteUserAccount(ctx context.Context, input DeleteUserAccount) (*DeleteUserAccountPayload, error) {
+	_, role, ok := GetUser(ctx)
+	if !ok {
+		return &DeleteUserAccountPayload{Ok: false}, nil
+	}
+	if role != auth.RoleAdmin {
+		return &DeleteUserAccountPayload{Ok: false}, &gqlerror.Error{
+			Message: "User not found",
+			Extensions: map[string]interface{}{
+				"code": "0-401",
+			},
+		}
+	}
 	user, err := r.Repository.GetUserAccountByID(ctx, input.UserID)
 	if err != nil {
 		return &DeleteUserAccountPayload{Ok: false}, err
 	}
 
-	var newOwnerID uuid.UUID
-	if input.NewOwnerID == nil {
-		sysUser, err := r.Repository.GetUserAccountByUsername(ctx, "system")
-		if err != nil {
-			return &DeleteUserAccountPayload{Ok: false}, err
-		}
-		newOwnerID = sysUser.UserID
-	} else {
-		newOwnerID = *input.NewOwnerID
-	}
-	projectIDs, err := r.Repository.UpdateProjectOwnerByOwnerID(ctx, db.UpdateProjectOwnerByOwnerIDParams{Owner: user.UserID, Owner_2: newOwnerID})
-	if err != sql.ErrNoRows && err != nil {
-		return &DeleteUserAccountPayload{Ok: false}, err
-	}
-	for _, projectID := range projectIDs {
-		r.Repository.DeleteProjectMember(ctx, db.DeleteProjectMemberParams{UserID: newOwnerID, ProjectID: projectID})
-	}
-	teamIDs, err := r.Repository.UpdateTeamOwnerByOwnerID(ctx, db.UpdateTeamOwnerByOwnerIDParams{Owner: user.UserID, Owner_2: newOwnerID})
-	if err != sql.ErrNoRows && err != nil {
-		return &DeleteUserAccountPayload{Ok: false}, err
-	}
-	for _, teamID := range teamIDs {
-		r.Repository.DeleteTeamMember(ctx, db.DeleteTeamMemberParams{UserID: newOwnerID, TeamID: teamID})
-	}
+	// TODO(jordanknott) migrate admin ownership
+
 	err = r.Repository.DeleteUserAccountByID(ctx, input.UserID)
 	if err != nil {
 		return &DeleteUserAccountPayload{Ok: false}, err
@@ -788,12 +786,7 @@ func (r *mutationResolver) DeleteUserAccount(ctx context.Context, input DeleteUs
 }
 
 func (r *mutationResolver) LogoutUser(ctx context.Context, input LogoutUser) (bool, error) {
-	userID, err := uuid.Parse(input.UserID)
-	if err != nil {
-		return false, err
-	}
-
-	err = r.Repository.DeleteRefreshTokenByUserID(ctx, userID)
+	err := r.Repository.DeleteRefreshTokenByUserID(ctx, input.UserID)
 	return true, err
 }
 
@@ -822,11 +815,89 @@ func (r *mutationResolver) UpdateUserPassword(ctx context.Context, input UpdateU
 }
 
 func (r *mutationResolver) UpdateUserRole(ctx context.Context, input UpdateUserRole) (*UpdateUserRolePayload, error) {
+	_, role, ok := GetUser(ctx)
+	if !ok {
+		return &UpdateUserRolePayload{}, nil
+	}
+	if role != auth.RoleAdmin {
+		return &UpdateUserRolePayload{}, &gqlerror.Error{
+			Message: "User not found",
+			Extensions: map[string]interface{}{
+				"code": "0-401",
+			},
+		}
+	}
 	user, err := r.Repository.UpdateUserRole(ctx, db.UpdateUserRoleParams{RoleCode: input.RoleCode.String(), UserID: input.UserID})
 	if err != nil {
 		return &UpdateUserRolePayload{}, err
 	}
 	return &UpdateUserRolePayload{User: &user}, nil
+}
+
+func (r *mutationResolver) UpdateUserInfo(ctx context.Context, input UpdateUserInfo) (*UpdateUserInfoPayload, error) {
+	userID, ok := GetUserID(ctx)
+	if !ok {
+		return &UpdateUserInfoPayload{}, errors.New("invalid user ID")
+	}
+	user, err := r.Repository.UpdateUserAccountInfo(ctx, db.UpdateUserAccountInfoParams{
+		Bio: input.Bio, FullName: input.Name, Initials: input.Initials, Email: input.Email, UserID: userID,
+	})
+	return &UpdateUserInfoPayload{User: &user}, err
+}
+
+func (r *notificationResolver) ID(ctx context.Context, obj *db.Notification) (uuid.UUID, error) {
+	return obj.NotificationID, nil
+}
+
+func (r *notificationResolver) Entity(ctx context.Context, obj *db.Notification) (*NotificationEntity, error) {
+	log.WithFields(log.Fields{"notificationID": obj.NotificationID}).Info("fetching entity for notification")
+	entity, err := r.Repository.GetEntityForNotificationID(ctx, obj.NotificationID)
+	log.WithFields(log.Fields{"entityID": entity.EntityID}).Info("fetched entity")
+	if err != nil {
+		return &NotificationEntity{}, err
+	}
+	entityType := GetEntityType(entity.EntityType)
+	switch entityType {
+	case EntityTypeTask:
+		task, err := r.Repository.GetTaskByID(ctx, entity.EntityID)
+		if err != nil {
+			return &NotificationEntity{}, err
+		}
+		return &NotificationEntity{Type: entityType, ID: entity.EntityID, Name: task.Name}, err
+
+	default:
+		panic(fmt.Errorf("not implemented"))
+	}
+}
+
+func (r *notificationResolver) ActionType(ctx context.Context, obj *db.Notification) (ActionType, error) {
+	entity, err := r.Repository.GetEntityForNotificationID(ctx, obj.NotificationID)
+	if err != nil {
+		return ActionTypeTaskMemberAdded, err
+	}
+	actionType := GetActionType(entity.ActionType)
+	return actionType, nil
+}
+
+func (r *notificationResolver) Actor(ctx context.Context, obj *db.Notification) (*NotificationActor, error) {
+	entity, err := r.Repository.GetEntityForNotificationID(ctx, obj.NotificationID)
+	if err != nil {
+		return &NotificationActor{}, err
+	}
+	log.WithFields(log.Fields{"entityID": entity.ActorID}).Info("fetching actor")
+	user, err := r.Repository.GetUserAccountByID(ctx, entity.ActorID)
+	if err != nil {
+		return &NotificationActor{}, err
+	}
+	return &NotificationActor{ID: entity.ActorID, Name: user.FullName, Type: ActorTypeUser}, nil
+}
+
+func (r *notificationResolver) CreatedAt(ctx context.Context, obj *db.Notification) (*time.Time, error) {
+	entity, err := r.Repository.GetEntityForNotificationID(ctx, obj.NotificationID)
+	if err != nil {
+		return &time.Time{}, err
+	}
+	return &entity.CreatedOn, nil
 }
 
 func (r *organizationResolver) ID(ctx context.Context, obj *db.Organization) (uuid.UUID, error) {
@@ -839,26 +910,14 @@ func (r *projectResolver) ID(ctx context.Context, obj *db.Project) (uuid.UUID, e
 
 func (r *projectResolver) Team(ctx context.Context, obj *db.Project) (*db.Team, error) {
 	team, err := r.Repository.GetTeamByID(ctx, obj.TeamID)
-	return &team, err
-}
-
-func (r *projectResolver) Owner(ctx context.Context, obj *db.Project) (*Member, error) {
-	user, err := r.Repository.GetUserAccountByID(ctx, obj.Owner)
 	if err != nil {
-		return &Member{}, err
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		log.WithFields(log.Fields{"teamID": obj.TeamID, "projectID": obj.ProjectID}).WithError(err).Error("issue while getting team for project")
+		return &team, err
 	}
-	var url *string
-	if user.ProfileAvatarUrl.Valid {
-		url = &user.ProfileAvatarUrl.String
-	}
-	profileIcon := &ProfileIcon{url, &user.Initials, &user.ProfileBgColor}
-	role, err := r.Repository.GetRoleForProjectMemberByUserID(ctx, db.GetRoleForProjectMemberByUserIDParams{UserID: user.UserID, ProjectID: obj.ProjectID})
-	if user.ProfileAvatarUrl.Valid {
-		url = &user.ProfileAvatarUrl.String
-	}
-	return &Member{ID: obj.Owner, FullName: user.FullName, ProfileIcon: profileIcon,
-		Role: &db.Role{Code: role.Code, Name: role.Name},
-	}, nil
+	return &team, nil
 }
 
 func (r *projectResolver) TaskGroups(ctx context.Context, obj *db.Project) ([]db.TaskGroup, error) {
@@ -866,24 +925,7 @@ func (r *projectResolver) TaskGroups(ctx context.Context, obj *db.Project) ([]db
 }
 
 func (r *projectResolver) Members(ctx context.Context, obj *db.Project) ([]Member, error) {
-	user, err := r.Repository.GetUserAccountByID(ctx, obj.Owner)
 	members := []Member{}
-	if err == sql.ErrNoRows {
-		return members, nil
-	}
-	if err != nil {
-		log.WithError(err).Error("get user account by ID")
-		return members, err
-	}
-	var url *string
-	if user.ProfileAvatarUrl.Valid {
-		url = &user.ProfileAvatarUrl.String
-	}
-	profileIcon := &ProfileIcon{url, &user.Initials, &user.ProfileBgColor}
-	members = append(members, Member{
-		ID: obj.Owner, FullName: user.FullName, ProfileIcon: profileIcon, Username: user.Username,
-		Role: &db.Role{Code: "owner", Name: "Owner"},
-	})
 	projectMembers, err := r.Repository.GetProjectMembersForProjectID(ctx, obj.ProjectID)
 	if err != nil {
 		log.WithError(err).Error("get project members for project id")
@@ -891,7 +933,7 @@ func (r *projectResolver) Members(ctx context.Context, obj *db.Project) ([]Membe
 	}
 
 	for _, projectMember := range projectMembers {
-		user, err = r.Repository.GetUserAccountByID(ctx, projectMember.UserID)
+		user, err := r.Repository.GetUserAccountByID(ctx, projectMember.UserID)
 		if err != nil {
 			log.WithError(err).Error("get user account by ID")
 			return members, err
@@ -947,11 +989,7 @@ func (r *queryResolver) Users(ctx context.Context) ([]db.UserAccount, error) {
 }
 
 func (r *queryResolver) FindUser(ctx context.Context, input FindUser) (*db.UserAccount, error) {
-	userId, err := uuid.Parse(input.UserID)
-	if err != nil {
-		return &db.UserAccount{}, err
-	}
-	account, err := r.Repository.GetUserAccountByID(ctx, userId)
+	account, err := r.Repository.GetUserAccountByID(ctx, input.UserID)
 	if err == sql.ErrNoRows {
 		return &db.UserAccount{}, &gqlerror.Error{
 			Message: "User not found",
@@ -964,11 +1002,12 @@ func (r *queryResolver) FindUser(ctx context.Context, input FindUser) (*db.UserA
 }
 
 func (r *queryResolver) FindProject(ctx context.Context, input FindProject) (*db.Project, error) {
-	projectID, err := uuid.Parse(input.ProjectID)
-	if err != nil {
-		return &db.Project{}, err
+	userID, role, ok := GetUser(ctx)
+	log.WithFields(log.Fields{"userID": userID, "role": role}).Info("find project user")
+	if !ok {
+		return &db.Project{}, nil
 	}
-	project, err := r.Repository.GetProjectByID(ctx, projectID)
+	project, err := r.Repository.GetProjectByID(ctx, input.ProjectID)
 	if err == sql.ErrNoRows {
 		return &db.Project{}, &gqlerror.Error{
 			Message: "Project not found",
@@ -977,7 +1016,7 @@ func (r *queryResolver) FindProject(ctx context.Context, input FindProject) (*db
 			},
 		}
 	}
-	return &project, err
+	return &project, nil
 }
 
 func (r *queryResolver) FindTask(ctx context.Context, input FindTask) (*db.Task, error) {
@@ -986,10 +1025,59 @@ func (r *queryResolver) FindTask(ctx context.Context, input FindTask) (*db.Task,
 }
 
 func (r *queryResolver) Projects(ctx context.Context, input *ProjectsFilter) ([]db.Project, error) {
+	userID, orgRole, ok := GetUser(ctx)
+	if !ok {
+		log.Info("user id was not found from middleware")
+		return []db.Project{}, nil
+	}
+	log.WithFields(log.Fields{"userID": userID}).Info("fetching projects")
+
 	if input != nil {
 		return r.Repository.GetAllProjectsForTeam(ctx, *input.TeamID)
 	}
-	return r.Repository.GetAllProjects(ctx)
+
+	var teams []db.Team
+	var err error
+	if orgRole == "admin" {
+		teams, err = r.Repository.GetAllTeams(ctx)
+	} else {
+		teams, err = r.Repository.GetTeamsForUserIDWhereAdmin(ctx, userID)
+	}
+
+	projects := make(map[string]db.Project)
+	for _, team := range teams {
+		log.WithFields(log.Fields{"teamID": team.TeamID}).Info("found team")
+		teamProjects, err := r.Repository.GetAllProjectsForTeam(ctx, team.TeamID)
+		if err != sql.ErrNoRows && err != nil {
+			log.Info("issue getting team projects")
+			return []db.Project{}, nil
+		}
+		for _, project := range teamProjects {
+			log.WithFields(log.Fields{"projectID": project.ProjectID.String()}).Info("adding team project")
+			projects[project.ProjectID.String()] = project
+		}
+	}
+
+	visibleProjects, err := r.Repository.GetAllVisibleProjectsForUserID(ctx, userID)
+	if err != nil {
+		log.WithField("userID", userID).Info("error getting visible projects for user")
+		return []db.Project{}, nil
+	}
+	for _, project := range visibleProjects {
+		log.WithFields(log.Fields{"projectID": project.ProjectID.String()}).Info("found visible project")
+		if _, ok := projects[project.ProjectID.String()]; !ok {
+			log.WithFields(log.Fields{"projectID": project.ProjectID.String()}).Info("adding visible project")
+			projects[project.ProjectID.String()] = project
+		}
+	}
+	log.WithFields(log.Fields{"projectLength": len(projects)}).Info("making projects")
+	allProjects := make([]db.Project, 0, len(projects))
+	for _, project := range projects {
+		log.WithFields(log.Fields{"projectID": project.ProjectID.String()}).Info("add project to final list")
+		allProjects = append(allProjects, project)
+	}
+	log.Info(allProjects)
+	return allProjects, nil
 }
 
 func (r *queryResolver) FindTeam(ctx context.Context, input FindTeam) (*db.Team, error) {
@@ -1001,7 +1089,52 @@ func (r *queryResolver) FindTeam(ctx context.Context, input FindTeam) (*db.Team,
 }
 
 func (r *queryResolver) Teams(ctx context.Context) ([]db.Team, error) {
-	return r.Repository.GetAllTeams(ctx)
+	userID, orgRole, ok := GetUser(ctx)
+	if !ok {
+		log.Error("userID or orgRole does not exist!")
+		return []db.Team{}, errors.New("internal error")
+	}
+	if orgRole == "admin" {
+
+		return r.Repository.GetAllTeams(ctx)
+	}
+
+	teams := make(map[string]db.Team)
+	adminTeams, err := r.Repository.GetTeamsForUserIDWhereAdmin(ctx, userID)
+	if err != nil {
+		log.WithError(err).Error("error while getting teams for user ID")
+		return []db.Team{}, err
+	}
+
+	for _, team := range adminTeams {
+		teams[team.TeamID.String()] = team
+	}
+
+	visibleProjects, err := r.Repository.GetAllVisibleProjectsForUserID(ctx, userID)
+	if err != nil {
+		log.WithField("userID", userID).WithError(err).Error("error while getting visible projects for user ID")
+		return []db.Team{}, err
+	}
+	for _, project := range visibleProjects {
+		log.WithFields(log.Fields{"projectID": project.ProjectID.String()}).Info("found visible project")
+		if _, ok := teams[project.ProjectID.String()]; !ok {
+			log.WithFields(log.Fields{"projectID": project.ProjectID.String()}).Info("adding visible project")
+			team, err := r.Repository.GetTeamByID(ctx, project.TeamID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				log.WithField("teamID", project.TeamID).WithError(err).Error("error getting team by id")
+				return []db.Team{}, err
+			}
+			teams[project.TeamID.String()] = team
+		}
+	}
+	foundTeams := make([]db.Team, 0, len(teams))
+	for _, team := range teams {
+		foundTeams = append(foundTeams, team)
+	}
+	return foundTeams, nil
 }
 
 func (r *queryResolver) LabelColors(ctx context.Context) ([]db.LabelColor, error) {
@@ -1012,19 +1145,52 @@ func (r *queryResolver) TaskGroups(ctx context.Context) ([]db.TaskGroup, error) 
 	return r.Repository.GetAllTaskGroups(ctx)
 }
 
-func (r *queryResolver) Me(ctx context.Context) (*db.UserAccount, error) {
+func (r *queryResolver) Me(ctx context.Context) (*MePayload, error) {
 	userID, ok := GetUserID(ctx)
 	if !ok {
-		return &db.UserAccount{}, fmt.Errorf("internal server error")
+		return &MePayload{}, fmt.Errorf("internal server error")
 	}
 	user, err := r.Repository.GetUserAccountByID(ctx, userID)
 	if err == sql.ErrNoRows {
 		log.WithFields(log.Fields{"userID": userID}).Warning("can not find user for me query")
-		return &db.UserAccount{}, nil
+		return &MePayload{}, nil
 	} else if err != nil {
-		return &db.UserAccount{}, err
+		return &MePayload{}, err
 	}
-	return &user, err
+	var projectRoles []ProjectRole
+	projects, err := r.Repository.GetProjectRolesForUserID(ctx, userID)
+	if err != nil {
+		return &MePayload{}, err
+	}
+	for _, project := range projects {
+		projectRoles = append(projectRoles, ProjectRole{ProjectID: project.ProjectID, RoleCode: ConvertToRoleCode("admin")})
+		// projectRoles = append(projectRoles, ProjectRole{ProjectID: project.ProjectID, RoleCode: ConvertToRoleCode(project.RoleCode)})
+	}
+	var teamRoles []TeamRole
+	teams, err := r.Repository.GetTeamRolesForUserID(ctx, userID)
+	if err != nil {
+		return &MePayload{}, err
+	}
+	for _, team := range teams {
+		// teamRoles = append(teamRoles, TeamRole{TeamID: team.TeamID, RoleCode: ConvertToRoleCode(team.RoleCode)})
+		teamRoles = append(teamRoles, TeamRole{TeamID: team.TeamID, RoleCode: ConvertToRoleCode("admin")})
+	}
+	return &MePayload{User: &user, TeamRoles: teamRoles, ProjectRoles: projectRoles}, err
+}
+
+func (r *queryResolver) Notifications(ctx context.Context) ([]db.Notification, error) {
+	userID, ok := GetUserID(ctx)
+	log.WithFields(log.Fields{"userID": userID}).Info("fetching notifications")
+	if !ok {
+		return []db.Notification{}, errors.New("user id is missing")
+	}
+	notifications, err := r.Repository.GetAllNotificationsForUserID(ctx, userID)
+	if err == sql.ErrNoRows {
+		return []db.Notification{}, nil
+	} else if err != nil {
+		return []db.Notification{}, err
+	}
+	return notifications, nil
 }
 
 func (r *refreshTokenResolver) ID(ctx context.Context, obj *db.RefreshToken) (uuid.UUID, error) {
@@ -1054,6 +1220,13 @@ func (r *taskResolver) Description(ctx context.Context, obj *db.Task) (*string, 
 func (r *taskResolver) DueDate(ctx context.Context, obj *db.Task) (*time.Time, error) {
 	if obj.DueDate.Valid {
 		return &obj.DueDate.Time, nil
+	}
+	return nil, nil
+}
+
+func (r *taskResolver) CompletedAt(ctx context.Context, obj *db.Task) (*time.Time, error) {
+	if obj.CompletedAt.Valid {
+		return &obj.CompletedAt.Time, nil
 	}
 	return nil, nil
 }
@@ -1119,11 +1292,14 @@ func (r *taskResolver) Badges(ctx context.Context, obj *db.Task) (*TaskBadges, e
 			return &TaskBadges{}, err
 		}
 		for _, item := range items {
-			total += 1
+			total++
 			if item.Complete {
-				complete += 1
+				complete++
 			}
 		}
+	}
+	if complete == 0 && total == 0 {
+		return &TaskBadges{Checklist: nil}, nil
 	}
 	return &TaskBadges{Checklist: &ChecklistBadge{Total: total, Complete: complete}}, nil
 }
@@ -1171,34 +1347,8 @@ func (r *teamResolver) ID(ctx context.Context, obj *db.Team) (uuid.UUID, error) 
 }
 
 func (r *teamResolver) Members(ctx context.Context, obj *db.Team) ([]Member, error) {
-	user, err := r.Repository.GetUserAccountByID(ctx, obj.Owner)
 	members := []Member{}
-	log.WithFields(log.Fields{"teamID": obj.TeamID}).Info("getting members")
-	if err == sql.ErrNoRows {
-		return members, nil
-	}
-	if err != nil {
-		log.WithError(err).Error("get user account by ID")
-		return members, err
-	}
-	ownedList, err := GetOwnedList(ctx, r.Repository, user)
-	if err != nil {
-		return members, err
-	}
-	memberList, err := GetMemberList(ctx, r.Repository, user)
-	if err != nil {
-		return members, err
-	}
 
-	var url *string
-	if user.ProfileAvatarUrl.Valid {
-		url = &user.ProfileAvatarUrl.String
-	}
-	profileIcon := &ProfileIcon{url, &user.Initials, &user.ProfileBgColor}
-	members = append(members, Member{
-		ID: obj.Owner, FullName: user.FullName, ProfileIcon: profileIcon, Username: user.Username,
-		Owned: ownedList, Member: memberList, Role: &db.Role{Code: "owner", Name: "Owner"},
-	})
 	teamMembers, err := r.Repository.GetTeamMembersForTeamID(ctx, obj.TeamID)
 	if err != nil {
 		log.WithError(err).Error("get project members for project id")
@@ -1206,7 +1356,7 @@ func (r *teamResolver) Members(ctx context.Context, obj *db.Team) ([]Member, err
 	}
 
 	for _, teamMember := range teamMembers {
-		user, err = r.Repository.GetUserAccountByID(ctx, teamMember.UserID)
+		user, err := r.Repository.GetUserAccountByID(ctx, teamMember.UserID)
 		if err != nil {
 			log.WithError(err).Error("get user account by ID")
 			return members, err
@@ -1262,15 +1412,7 @@ func (r *userAccountResolver) ProfileIcon(ctx context.Context, obj *db.UserAccou
 }
 
 func (r *userAccountResolver) Owned(ctx context.Context, obj *db.UserAccount) (*OwnedList, error) {
-	ownedTeams, err := r.Repository.GetOwnedTeamsForUserID(ctx, obj.UserID)
-	if err != sql.ErrNoRows && err != nil {
-		return &OwnedList{}, err
-	}
-	ownedProjects, err := r.Repository.GetOwnedProjectsForUserID(ctx, obj.UserID)
-	if err != sql.ErrNoRows && err != nil {
-		return &OwnedList{}, err
-	}
-	return &OwnedList{Teams: ownedTeams, Projects: ownedProjects}, nil
+	return &OwnedList{}, nil // TODO(jordanknott)
 }
 
 func (r *userAccountResolver) Member(ctx context.Context, obj *db.UserAccount) (*MemberList, error) {
@@ -1307,6 +1449,9 @@ func (r *Resolver) LabelColor() LabelColorResolver { return &labelColorResolver{
 
 // Mutation returns MutationResolver implementation.
 func (r *Resolver) Mutation() MutationResolver { return &mutationResolver{r} }
+
+// Notification returns NotificationResolver implementation.
+func (r *Resolver) Notification() NotificationResolver { return &notificationResolver{r} }
 
 // Organization returns OrganizationResolver implementation.
 func (r *Resolver) Organization() OrganizationResolver { return &organizationResolver{r} }
@@ -1348,6 +1493,7 @@ func (r *Resolver) UserAccount() UserAccountResolver { return &userAccountResolv
 
 type labelColorResolver struct{ *Resolver }
 type mutationResolver struct{ *Resolver }
+type notificationResolver struct{ *Resolver }
 type organizationResolver struct{ *Resolver }
 type projectResolver struct{ *Resolver }
 type projectLabelResolver struct{ *Resolver }

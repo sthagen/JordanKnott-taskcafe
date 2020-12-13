@@ -1,53 +1,122 @@
-import React, { useState, useRef, useContext, useEffect } from 'react';
-import { MENU_TYPES } from 'shared/components/TopNavbar';
+import React, { useState, useRef } from 'react';
 import updateApolloCache from 'shared/utils/cache';
-import GlobalTopNavbar, { ProjectPopup } from 'App/TopNavbar';
-import LabelManagerEditor from '../LabelManagerEditor';
 import styled, { css } from 'styled-components/macro';
 import { Bolt, ToggleOn, Tags, CheckCircle, Sort, Filter } from 'shared/icons';
 import { usePopup, Popup } from 'shared/components/PopupMenu';
-import { useParams, Route, useRouteMatch, useHistory, RouteComponentProps, useLocation } from 'react-router-dom';
+import { useRouteMatch, useHistory } from 'react-router-dom';
 import {
-  useSetProjectOwnerMutation,
-  useUpdateProjectMemberRoleMutation,
-  useCreateProjectMemberMutation,
-  useDeleteProjectMemberMutation,
   useSetTaskCompleteMutation,
   useToggleTaskLabelMutation,
-  useUpdateProjectNameMutation,
   useFindProjectQuery,
+  useSortTaskGroupMutation,
   useUpdateTaskGroupNameMutation,
   useUpdateTaskNameMutation,
-  useUpdateProjectLabelMutation,
   useCreateTaskMutation,
-  useDeleteProjectLabelMutation,
   useDeleteTaskMutation,
   useUpdateTaskLocationMutation,
   useUpdateTaskGroupLocationMutation,
   useCreateTaskGroupMutation,
   useDeleteTaskGroupMutation,
-  useUpdateTaskDescriptionMutation,
   useAssignTaskMutation,
-  DeleteTaskDocument,
   FindProjectDocument,
-  useCreateProjectLabelMutation,
   useUnassignTaskMutation,
   useUpdateTaskDueDateMutation,
   FindProjectQuery,
-  useUsersQuery,
+  useDuplicateTaskGroupMutation,
+  DuplicateTaskGroupMutation,
+  DuplicateTaskGroupDocument,
+  useDeleteTaskGroupTasksMutation,
 } from 'shared/generated/graphql';
 
 import QuickCardEditor from 'shared/components/QuickCardEditor';
 import ListActions from 'shared/components/ListActions';
 import MemberManager from 'shared/components/MemberManager';
-import SimpleLists from 'shared/components/Lists';
+import SimpleLists, {
+  TaskStatus,
+  TaskSince,
+  TaskStatusFilter,
+  TaskMeta,
+  TaskMetaMatch,
+  TaskMetaFilters,
+} from 'shared/components/Lists';
+import { TaskSorting, TaskSortingType, TaskSortingDirection, sortTasks } from 'shared/utils/sorting';
 import produce from 'immer';
 import MiniProfile from 'shared/components/MiniProfile';
 import DueDateManager from 'shared/components/DueDateManager';
-import UserIDContext from 'App/context';
-import LabelManager from 'shared/components/PopupMenu/LabelManager';
-import LabelEditor from 'shared/components/PopupMenu/LabelEditor';
 import EmptyBoard from 'shared/components/EmptyBoard';
+import NOOP from 'shared/utils/noop';
+import LabelManagerEditor from 'Projects/Project/LabelManagerEditor';
+import Chip from 'shared/components/Chip';
+import { toast } from 'react-toastify';
+import { useCurrentUser } from 'App/context';
+import FilterStatus from './FilterStatus';
+import FilterMeta from './FilterMeta';
+import SortPopup from './SortPopup';
+
+const FilterChip = styled(Chip)`
+  margin-right: 4px;
+`;
+
+type MetaFilterCloseFn = (meta: TaskMeta, key: string) => void;
+
+const renderTaskSortingLabel = (sorting: TaskSorting) => {
+  if (sorting.type === TaskSortingType.TASK_TITLE) {
+    return 'Sort: Card title';
+  }
+  if (sorting.type === TaskSortingType.MEMBERS) {
+    return 'Sort: Members';
+  }
+  if (sorting.type === TaskSortingType.DUE_DATE) {
+    return 'Sort: Due Date';
+  }
+  if (sorting.type === TaskSortingType.LABELS) {
+    return 'Sort: Labels';
+  }
+  return 'Sort';
+};
+
+const renderMetaFilters = (filters: TaskMetaFilters, onClose: MetaFilterCloseFn) => {
+  const filterChips = [];
+  if (filters.taskName) {
+    filterChips.push(
+      <FilterChip
+        key="task-name"
+        label={`Title: ${filters.taskName.name}`}
+        onClose={() => onClose(TaskMeta.TITLE, 'task-name')}
+      />,
+    );
+  }
+
+  if (filters.dueDate) {
+    filterChips.push(
+      <FilterChip
+        key="due-date"
+        label={filters.dueDate.label}
+        onClose={() => onClose(TaskMeta.DUE_DATE, 'due-date')}
+      />,
+    );
+  }
+  for (const memberFilter of filters.members) {
+    filterChips.push(
+      <FilterChip
+        key={`member-${memberFilter.id}`}
+        label={`Member: ${memberFilter.username}`}
+        onClose={() => onClose(TaskMeta.MEMBER, memberFilter.id)}
+      />,
+    );
+  }
+  for (const labelFilter of filters.labels) {
+    filterChips.push(
+      <FilterChip
+        key={`label-${labelFilter.id}`}
+        label={labelFilter.name === '' ? 'Label' : `Label: ${labelFilter.name}`}
+        color={labelFilter.color}
+        onClose={() => onClose(TaskMeta.LABEL, labelFilter.id)}
+      />,
+    );
+  }
+  return filterChips;
+};
 
 const ProjectBar = styled.div`
   display: flex;
@@ -62,14 +131,14 @@ const ProjectActions = styled.div`
   align-items: center;
 `;
 
-const ProjectAction = styled.div<{ disabled?: boolean }>`
+const ProjectActionWrapper = styled.div<{ disabled?: boolean }>`
   cursor: pointer;
   display: flex;
   align-items: center;
   font-size: 15px;
   color: rgba(${props => props.theme.colors.text.primary});
 
-  &:not(:last-child) {
+  &:not(:last-of-type) {
     margin-right: 16px;
   }
 
@@ -89,6 +158,25 @@ const ProjectActionText = styled.span`
   padding-left: 4px;
 `;
 
+type ProjectActionProps = {
+  onClick?: (target: React.RefObject<HTMLElement>) => void;
+  disabled?: boolean;
+};
+
+const ProjectAction: React.FC<ProjectActionProps> = ({ onClick, disabled = false, children }) => {
+  const $container = useRef<HTMLDivElement>(null);
+  const handleClick = () => {
+    if (onClick) {
+      onClick($container);
+    }
+  };
+  return (
+    <ProjectActionWrapper ref={$container} onClick={handleClick} disabled={disabled}>
+      {children}
+    </ProjectActionWrapper>
+  );
+};
+
 interface QuickCardEditorState {
   isOpen: boolean;
   target: React.RefObject<HTMLElement> | null;
@@ -106,27 +194,84 @@ const initialQuickCardEditorState: QuickCardEditorState = {
 type ProjectBoardProps = {
   onCardLabelClick?: () => void;
   cardLabelVariant?: CardLabelVariant;
-  projectID?: string;
-  loading?: boolean;
+  projectID: string;
 };
 
-const ProjectBoard: React.FC<ProjectBoardProps> = ({
-  projectID,
-  onCardLabelClick,
-  cardLabelVariant,
-  loading: isLoading = false,
-}) => {
+export const BoardLoading = () => {
+  return (
+    <>
+      <ProjectBar>
+        <ProjectActions>
+          <ProjectAction>
+            <CheckCircle width={13} height={13} />
+            <ProjectActionText>All Tasks</ProjectActionText>
+          </ProjectAction>
+          <ProjectAction>
+            <Sort width={13} height={13} />
+            <ProjectActionText>Sort</ProjectActionText>
+          </ProjectAction>
+          <ProjectAction>
+            <Filter width={13} height={13} />
+            <ProjectActionText>Filter</ProjectActionText>
+          </ProjectAction>
+        </ProjectActions>
+        <ProjectActions>
+          <ProjectAction>
+            <Tags width={13} height={13} />
+            <ProjectActionText>Labels</ProjectActionText>
+          </ProjectAction>
+          <ProjectAction disabled>
+            <ToggleOn width={13} height={13} />
+            <ProjectActionText>Fields</ProjectActionText>
+          </ProjectAction>
+          <ProjectAction disabled>
+            <Bolt width={13} height={13} />
+            <ProjectActionText>Rules</ProjectActionText>
+          </ProjectAction>
+        </ProjectActions>
+      </ProjectBar>
+      <EmptyBoard />
+    </>
+  );
+};
+
+const initTaskStatusFilter: TaskStatusFilter = {
+  status: TaskStatus.ALL,
+  since: TaskSince.ALL,
+};
+
+const initTaskMetaFilters: TaskMetaFilters = {
+  match: TaskMetaMatch.MATCH_ANY,
+  dueDate: null,
+  taskName: null,
+  labels: [],
+  members: [],
+};
+
+const initTaskSorting: TaskSorting = {
+  type: TaskSortingType.NONE,
+  direction: TaskSortingDirection.ASC,
+};
+
+const ProjectBoard: React.FC<ProjectBoardProps> = ({ projectID, onCardLabelClick, cardLabelVariant }) => {
   const [assignTask] = useAssignTaskMutation();
   const [unassignTask] = useUnassignTaskMutation();
-  const $labelsRef = useRef<HTMLDivElement>(null);
   const match = useRouteMatch();
   const labelsRef = useRef<Array<ProjectLabel>>([]);
+  const membersRef = useRef<Array<TaskUser>>([]);
   const { showPopup, hidePopup } = usePopup();
   const taskLabelsRef = useRef<Array<TaskLabel>>([]);
   const [quickCardEditor, setQuickCardEditor] = useState(initialQuickCardEditorState);
-  const { userID } = useContext(UserIDContext);
   const [updateTaskGroupLocation] = useUpdateTaskGroupLocationMutation({});
+  const [taskStatusFilter, setTaskStatusFilter] = useState(initTaskStatusFilter);
+  const [taskMetaFilters, setTaskMetaFilters] = useState(initTaskMetaFilters);
+  const [taskSorting, setTaskSorting] = useState(initTaskSorting);
   const history = useHistory();
+  const [sortTaskGroup] = useSortTaskGroupMutation({
+    onCompleted: () => {
+      toast('List was sorted');
+    },
+  });
   const [deleteTaskGroup] = useDeleteTaskGroupMutation({
     update: (client, deletedTaskGroupData) => {
       updateApolloCache<FindProjectQuery>(
@@ -138,7 +283,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
               (taskGroup: TaskGroup) => taskGroup.id !== deletedTaskGroupData.data.deleteTaskGroup.taskGroup.id,
             );
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
@@ -156,7 +301,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
               draftCache.findProject.taskGroups[idx].tasks.push({ ...newTaskData.data.createTask });
             }
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
@@ -170,14 +315,44 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
           produce(cache, draftCache => {
             draftCache.findProject.taskGroups.push({ ...newTaskGroupData.data.createTaskGroup, tasks: [] });
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
 
   const [updateTaskGroupName] = useUpdateTaskGroupNameMutation({});
   const { loading, data } = useFindProjectQuery({
-    variables: { projectId: projectID ?? '' },
+    variables: { projectID },
+  });
+  const [deleteTaskGroupTasks] = useDeleteTaskGroupTasksMutation({
+    update: (client, resp) =>
+      updateApolloCache<FindProjectQuery>(
+        client,
+        FindProjectDocument,
+        cache =>
+          produce(cache, draftCache => {
+            const idx = cache.findProject.taskGroups.findIndex(
+              t => t.id === resp.data.deleteTaskGroupTasks.taskGroupID,
+            );
+            if (idx !== -1) {
+              draftCache.findProject.taskGroups[idx].tasks = [];
+            }
+          }),
+        { projectID },
+      ),
+  });
+  const [duplicateTaskGroup] = useDuplicateTaskGroupMutation({
+    update: (client, resp) => {
+      updateApolloCache<FindProjectQuery>(
+        client,
+        FindProjectDocument,
+        cache =>
+          produce(cache, draftCache => {
+            draftCache.findProject.taskGroups.push(resp.data.duplicateTaskGroup.taskGroup);
+          }),
+        { projectID },
+      );
+    },
   });
 
   const [updateTaskDueDate] = useUpdateTaskDueDateMutation();
@@ -205,22 +380,21 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
               }
             }
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
+  const { user } = useCurrentUser();
   const [deleteTask] = useDeleteTaskMutation();
   const [toggleTaskLabel] = useToggleTaskLabelMutation({
     onCompleted: newTaskLabel => {
       taskLabelsRef.current = newTaskLabel.toggleTaskLabel.task.labels;
-      console.log(taskLabelsRef.current);
     },
   });
 
   const onCreateTask = (taskGroupID: string, name: string) => {
     if (data) {
       const taskGroup = data.findProject.taskGroups.find(t => t.id === taskGroupID);
-      console.log(`taskGroup ${taskGroup}`);
       if (taskGroup) {
         let position = 65535;
         if (taskGroup.tasks.length !== 0) {
@@ -231,16 +405,16 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
           position = Math.ceil(lastTask.position) * 2 + 1;
         }
 
-        console.log(`position ${position}`);
         createTask({
           variables: { taskGroupID, name, position },
           optimisticResponse: {
             __typename: 'Mutation',
             createTask: {
               __typename: 'Task',
-              id: '' + Math.round(Math.random() * -1000000),
+              id: `${Math.round(Math.random() * -1000000)}`,
               name,
               complete: false,
+              completedAt: null,
               taskGroup: {
                 __typename: 'TaskGroup',
                 id: taskGroup.id,
@@ -248,6 +422,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
                 position: taskGroup.position,
               },
               badges: {
+                __typename: 'TaskBadges',
                 checklist: null,
               },
               position,
@@ -273,52 +448,22 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
     }
   };
 
-  if (loading || isLoading) {
-    return (
-      <>
-        <ProjectBar>
-          <ProjectActions>
-            <ProjectAction disabled>
-              <CheckCircle width={13} height={13} />
-              <ProjectActionText>All Tasks</ProjectActionText>
-            </ProjectAction>
-            <ProjectAction disabled>
-              <Filter width={13} height={13} />
-              <ProjectActionText>Filter</ProjectActionText>
-            </ProjectAction>
-            <ProjectAction disabled>
-              <Sort width={13} height={13} />
-              <ProjectActionText>Sort</ProjectActionText>
-            </ProjectAction>
-          </ProjectActions>
-          <ProjectActions>
-            <ProjectAction>
-              <Tags width={13} height={13} />
-              <ProjectActionText>Labels</ProjectActionText>
-            </ProjectAction>
-            <ProjectAction disabled>
-              <ToggleOn width={13} height={13} />
-              <ProjectActionText>Fields</ProjectActionText>
-            </ProjectAction>
-            <ProjectAction disabled>
-              <Bolt width={13} height={13} />
-              <ProjectActionText>Rules</ProjectActionText>
-            </ProjectAction>
-          </ProjectActions>
-        </ProjectBar>
-        <EmptyBoard />
-      </>
-    );
+  if (loading) {
+    return <BoardLoading />;
   }
-  if (data) {
+  const getTaskStatusFilterLabel = (filter: TaskStatusFilter) => {
+    if (filter.status === TaskStatus.COMPLETE) {
+      return 'Complete';
+    }
+    if (filter.status === TaskStatus.INCOMPLETE) {
+      return 'Incomplete';
+    }
+    return 'All Tasks';
+  };
+  if (data && user) {
     labelsRef.current = data.findProject.labels;
+    membersRef.current = data.findProject.members;
     const onQuickEditorOpen = ($target: React.RefObject<HTMLElement>, taskID: string, taskGroupID: string) => {
-      if ($target && $target.current) {
-        const pos = $target.current.getBoundingClientRect();
-        const height = 120;
-        if (window.innerHeight - pos.bottom < height) {
-        }
-      }
       const taskGroup = data.findProject.taskGroups.find(t => t.id === taskGroupID);
       const currentTask = taskGroup ? taskGroup.tasks.find(t => t.id === taskID) : null;
       if (currentTask) {
@@ -341,23 +486,84 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
       <>
         <ProjectBar>
           <ProjectActions>
-            <ProjectAction disabled>
+            <ProjectAction
+              onClick={target => {
+                showPopup(
+                  target,
+                  <Popup tab={0} title={null}>
+                    <FilterStatus
+                      filter={taskStatusFilter}
+                      onChangeTaskStatusFilter={filter => {
+                        setTaskStatusFilter(filter);
+                        hidePopup();
+                      }}
+                    />
+                  </Popup>,
+                  { width: 185 },
+                );
+              }}
+            >
               <CheckCircle width={13} height={13} />
-              <ProjectActionText>All Tasks</ProjectActionText>
+              <ProjectActionText>{getTaskStatusFilterLabel(taskStatusFilter)}</ProjectActionText>
             </ProjectAction>
-            <ProjectAction disabled>
+            <ProjectAction
+              onClick={target => {
+                showPopup(
+                  target,
+                  <Popup tab={0} title={null}>
+                    <SortPopup
+                      sorting={taskSorting}
+                      onChangeTaskSorting={sorting => {
+                        setTaskSorting(sorting);
+                      }}
+                    />
+                  </Popup>,
+                  { width: 185 },
+                );
+              }}
+            >
+              <Sort width={13} height={13} />
+              <ProjectActionText>{renderTaskSortingLabel(taskSorting)}</ProjectActionText>
+            </ProjectAction>
+            <ProjectAction
+              onClick={target => {
+                showPopup(
+                  target,
+                  <FilterMeta
+                    filters={taskMetaFilters}
+                    onChangeTaskMetaFilter={filter => {
+                      setTaskMetaFilters(filter);
+                    }}
+                    userID={user?.id}
+                    labels={labelsRef}
+                    members={membersRef}
+                  />,
+                  { width: 200 },
+                );
+              }}
+            >
               <Filter width={13} height={13} />
               <ProjectActionText>Filter</ProjectActionText>
             </ProjectAction>
-            <ProjectAction disabled>
-              <Sort width={13} height={13} />
-              <ProjectActionText>Sort</ProjectActionText>
-            </ProjectAction>
+            {renderMetaFilters(taskMetaFilters, (meta, id) => {
+              setTaskMetaFilters(
+                produce(taskMetaFilters, draftFilters => {
+                  if (meta === TaskMeta.MEMBER) {
+                    draftFilters.members = draftFilters.members.filter(m => m.id !== id);
+                  } else if (meta === TaskMeta.LABEL) {
+                    draftFilters.labels = draftFilters.labels.filter(m => m.id !== id);
+                  } else if (meta === TaskMeta.TITLE) {
+                    draftFilters.taskName = null;
+                  } else if (meta === TaskMeta.DUE_DATE) {
+                    draftFilters.dueDate = null;
+                  }
+                }),
+              );
+            })}
           </ProjectActions>
           <ProjectActions>
             <ProjectAction
-              ref={$labelsRef}
-              onClick={() => {
+              onClick={$labelsRef => {
                 showPopup(
                   $labelsRef,
                   <LabelManagerEditor
@@ -386,7 +592,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
           onTaskClick={task => {
             history.push(`${match.url}/c/${task.id}`);
           }}
-          onCardLabelClick={onCardLabelClick ?? (() => {})}
+          onCardLabelClick={onCardLabelClick ?? NOOP}
           cardLabelVariant={cardLabelVariant ?? 'large'}
           onTaskDrop={(droppedTask, previousTaskGroupID) => {
             updateTaskLocation({
@@ -401,6 +607,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
                   __typename: 'UpdateTaskLocationPayload',
                   previousTaskGroupID,
                   task: {
+                    ...droppedTask,
                     __typename: 'Task',
                     name: droppedTask.name,
                     id: droppedTask.id,
@@ -429,9 +636,12 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
             });
           }}
           taskGroups={data.findProject.taskGroups}
+          taskStatusFilter={taskStatusFilter}
+          taskMetaFilters={taskMetaFilters}
+          taskSorting={taskSorting}
           onCreateTask={onCreateTask}
           onCreateTaskGroup={onCreateList}
-          onCardMemberClick={($targetRef, taskID, memberID) => {
+          onCardMemberClick={($targetRef, _taskID, memberID) => {
             const member = data.findProject.members.find(m => m.id === memberID);
             if (member) {
               showPopup(
@@ -453,15 +663,44 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
           onExtraMenuOpen={(taskGroupID: string, $targetRef: any) => {
             showPopup(
               $targetRef,
-              <Popup title="List actions" tab={0} onClose={() => hidePopup()}>
-                <ListActions
-                  taskGroupID={taskGroupID}
-                  onArchiveTaskGroup={tgID => {
-                    deleteTaskGroup({ variables: { taskGroupID: tgID } });
+              <ListActions
+                taskGroupID={taskGroupID}
+                onDeleteTaskGroupTasks={() => {
+                  deleteTaskGroupTasks({ variables: { taskGroupID } });
+                  hidePopup();
+                }}
+                onSortTaskGroup={taskSort => {
+                  const taskGroup = data.findProject.taskGroups.find(t => t.id === taskGroupID);
+                  if (taskGroup) {
+                    const tasks: Array<{ taskID: string; position: number }> = taskGroup.tasks
+                      .sort((a, b) => sortTasks(a, b, taskSort))
+                      .reduce((prevTasks: Array<{ taskID: string; position: number }>, t, idx) => {
+                        prevTasks.push({ taskID: t.id, position: (idx + 1) * 2048 });
+                        return tasks;
+                      }, []);
+                    sortTaskGroup({ variables: { taskGroupID, tasks } });
                     hidePopup();
-                  }}
-                />
-              </Popup>,
+                  }
+                }}
+                onDuplicateTaskGroup={newName => {
+                  const idx = data.findProject.taskGroups.findIndex(t => t.id === taskGroupID);
+                  if (idx !== -1) {
+                    const taskGroups = data.findProject.taskGroups.sort((a, b) => a.position - b.position);
+                    const prevPos = taskGroups[idx].position;
+                    const next = taskGroups[idx + 1];
+                    let newPos = prevPos * 2;
+                    if (next) {
+                      newPos = (prevPos + next.position) / 2.0;
+                    }
+                    duplicateTaskGroup({ variables: { projectID, taskGroupID, name: newName, position: newPos } });
+                    hidePopup();
+                  }
+                }}
+                onArchiveTaskGroup={tgID => {
+                  deleteTaskGroup({ variables: { taskGroupID: tgID } });
+                  hidePopup();
+                }}
+              />,
             );
           }}
         />
@@ -490,7 +729,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
                 </Popup>,
               );
             }}
-            onCardMemberClick={($targetRef, taskID, memberID) => {
+            onCardMemberClick={($targetRef, _taskID, memberID) => {
               const member = data.findProject.members.find(m => m.id === memberID);
               if (member) {
                 showPopup(
@@ -520,8 +759,8 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
                 />,
               );
             }}
-            onArchiveCard={(_listId: string, cardId: string) =>
-              deleteTask({
+            onArchiveCard={(_listId: string, cardId: string) => {
+              return deleteTask({
                 variables: { taskID: cardId },
                 update: client => {
                   updateApolloCache<FindProjectQuery>(
@@ -534,11 +773,11 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
                           tasks: taskGroup.tasks.filter(t => t.id !== cardId),
                         }));
                       }),
-                    { projectId: projectID },
+                    { projectID },
                   );
                 },
-              })
-            }
+              });
+            }}
             onOpenDueDatePopup={($targetRef, task) => {
               showPopup(
                 $targetRef,
@@ -553,7 +792,7 @@ const ProjectBoard: React.FC<ProjectBoardProps> = ({
                       updateTaskDueDate({ variables: { taskID: t.id, dueDate: newDueDate } });
                       hidePopup();
                     }}
-                    onCancel={() => {}}
+                    onCancel={NOOP}
                   />
                 </Popup>,
               );

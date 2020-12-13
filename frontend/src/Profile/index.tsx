@@ -1,13 +1,22 @@
 import React, { useRef, useEffect } from 'react';
 import styled from 'styled-components/macro';
 import GlobalTopNavbar from 'App/TopNavbar';
-import { Link } from 'react-router-dom';
 import { getAccessToken } from 'shared/utils/accessToken';
-import Navbar from 'App/Navbar';
 import Settings from 'shared/components/Settings';
-import UserIDContext from 'App/context';
-import { useMeQuery, useClearProfileAvatarMutation } from 'shared/generated/graphql';
+import {
+  useMeQuery,
+  useClearProfileAvatarMutation,
+  useUpdateUserPasswordMutation,
+  useUpdateUserInfoMutation,
+  MeQuery,
+  MeDocument,
+} from 'shared/generated/graphql';
 import axios from 'axios';
+import { useCurrentUser } from 'App/context';
+import NOOP from 'shared/utils/noop';
+import { toast } from 'react-toastify';
+import updateApolloCache from 'shared/utils/cache';
+import produce from 'immer';
 
 const MainContent = styled.div`
   padding: 0 0 50px 80px;
@@ -18,10 +27,17 @@ const MainContent = styled.div`
 const Projects = () => {
   const $fileUpload = useRef<HTMLInputElement>(null);
   const [clearProfileAvatar] = useClearProfileAvatarMutation();
+  const { user } = useCurrentUser();
+  const [updateUserInfo] = useUpdateUserInfoMutation();
+  const [updateUserPassword] = useUpdateUserPasswordMutation();
   const { loading, data, refetch } = useMeQuery();
   useEffect(() => {
-    document.title = 'Profile | Citadel';
+    document.title = 'Profile | Taskcafé';
   }, []);
+  if (!user) {
+    return null;
+  }
+
   return (
     <>
       <input
@@ -31,12 +47,11 @@ const Projects = () => {
         ref={$fileUpload}
         onChange={e => {
           if (e.target.files) {
-            console.log(e.target.files[0]);
             const fileData = new FormData();
             fileData.append('file', e.target.files[0]);
             const accessToken = getAccessToken();
             axios
-              .post('http://localhost:3333/users/me/avatar', fileData, {
+              .post('/users/me/avatar', fileData, {
                 headers: {
                   Authorization: `Bearer ${accessToken}`,
                 },
@@ -50,14 +65,26 @@ const Projects = () => {
           }
         }}
       />
-      <GlobalTopNavbar projectID={null} onSaveProjectName={() => {}} name={null} />
+      <GlobalTopNavbar projectID={null} onSaveProjectName={NOOP} name={null} />
       {!loading && data && (
         <Settings
-          profile={data.me}
+          profile={data.me.user}
           onProfileAvatarChange={() => {
             if ($fileUpload && $fileUpload.current) {
               $fileUpload.current.click();
             }
+          }}
+          onResetPassword={(password, done) => {
+            updateUserPassword({ variables: { userID: user.id, password } });
+            toast('Password was changed!');
+            done();
+          }}
+          onChangeUserInfo={(d, done) => {
+            updateUserInfo({
+              variables: { name: d.full_name, bio: d.bio, email: d.email, initials: d.initials },
+            });
+            toast('User info was saved!');
+            done();
           }}
           onProfileAvatarRemove={() => {
             clearProfileAvatar();

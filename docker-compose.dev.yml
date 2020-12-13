@@ -1,5 +1,18 @@
 version: "3"
 services:
+  postgres:
+    image: postgres:12.3-alpine
+    restart: always
+    networks:
+      - taskcafe-test
+    environment:
+      POSTGRES_USER: taskcafe
+      POSTGRES_PASSWORD: taskcafe_test
+      POSTGRES_DB: taskcafe
+    volumes:
+      - taskcafe-postgres:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
   mailhog:
     image: mailhog/mailhog:latest
     restart: always
@@ -17,3 +30,11 @@ services:
     restart: always
     ports:
       - 11211:11211
+
+volumes:
+  taskcafe-postgres:
+    external: false
+
+networks:
+  taskcafe-test:
+    driver: bridge

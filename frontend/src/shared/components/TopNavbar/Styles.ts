@@ -2,12 +2,16 @@ import styled, { css } from 'styled-components';
 import TextareaAutosize from 'react-autosize-textarea';
 import { mixin } from 'shared/utils/styles';
 import Button from 'shared/components/Button';
-import { Citadel } from 'shared/icons';
+import { Taskcafe } from 'shared/icons';
 import { NavLink, Link } from 'react-router-dom';
 import TaskAssignee from 'shared/components/TaskAssignee';
+import { useRef } from 'react';
+
 export const ProjectMember = styled(TaskAssignee)<{ zIndex: number }>`
   z-index: ${props => props.zIndex};
   position: relative;
+
+  box-shadow: 0 0 0 2px rgba(16, 22, 58), inset 0 0 0 1px rgba(16, 22, 58, 0.07);
 `;
 
 export const NavbarWrapper = styled.div`
@@ -62,7 +66,7 @@ export const ProfileNameWrapper = styled.div`
   line-height: 1.25;
 `;
 
-export const IconContainer = styled.div<{ disabled?: boolean }>`
+export const IconContainerWrapper = styled.div<{ disabled?: boolean }>`
   margin-right: 20px;
   cursor: pointer;
   ${props =>
@@ -83,7 +87,10 @@ export const ProfileNameSecondary = styled.small`
   color: #c2c6dc;
 `;
 
-export const ProfileIcon = styled.div<{ bgColor: string | null; backgroundURL: string | null }>`
+export const ProfileIcon = styled.div<{
+  bgColor: string | null;
+  backgroundURL: string | null;
+}>`
   width: 40px;
   height: 40px;
   border-radius: 9999px;
@@ -244,20 +251,20 @@ export const NavSeparator = styled.div`
 export const LogoContainer = styled(Link)`
   display: block;
   left: 50%;
+  right: 50%;
   position: absolute;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
 `;
 
-export const CitadelTitle = styled.h2`
+export const TaskcafeTitle = styled.h2`
   margin-left: 5px;
   color: rgba(${props => props.theme.colors.text.primary});
   font-size: 20px;
 `;
 
-export const CitadelLogo = styled(Citadel)`
+export const TaskcafeLogo = styled(Taskcafe)`
   fill: rgba(${props => props.theme.colors.text.primary});
   stroke: rgba(${props => props.theme.colors.text.primary});
 `;

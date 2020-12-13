@@ -8,21 +8,21 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/google/uuid"
-	"github.com/jordanknott/project-citadel/api/internal/auth"
-	"github.com/jordanknott/project-citadel/api/internal/db"
+	"github.com/jordanknott/taskcafe/internal/auth"
+	"github.com/jordanknott/taskcafe/internal/db"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
-var jwtKey = []byte("citadel_test_key")
-
 type authResource struct{}
 
+// LoginRequestData is the request data when a user logs in
 type LoginRequestData struct {
 	Username string
 	Password string
 }
 
+// NewUserAccount is the request data for a new user
 type NewUserAccount struct {
 	FullName string `json:"fullname"`
 	Username string
@@ -31,30 +31,35 @@ type NewUserAccount struct {
 	Email    string
 }
 
+// InstallRequestData is the request data for installing new Taskcafe app
 type InstallRequestData struct {
 	User NewUserAccount
 }
 
+// LoginResponseData is the response data for when a user logs in
 type LoginResponseData struct {
 	AccessToken string `json:"accessToken"`
 	IsInstalled bool   `json:"isInstalled"`
 }
 
+// LogoutResponseData is the response data for when a user logs out
 type LogoutResponseData struct {
 	Status string `json:"status"`
 }
 
+// RefreshTokenResponseData is the response data for when an access token is refreshed
 type RefreshTokenResponseData struct {
 	AccessToken string `json:"accessToken"`
 }
 
+// AvatarUploadResponseData is the response data for a user profile is uploaded
 type AvatarUploadResponseData struct {
 	UserID string `json:"userID"`
 	URL    string `json:"url"`
 }
 
-func (h *CitadelHandler) RefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
-
+// RefreshTokenHandler handles when a user attempts to refresh token
+func (h *TaskcafeHandler) RefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
 	_, err := h.repo.GetSystemOptionByKey(r.Context(), "is_installed")
 	if err == sql.ErrNoRows {
 		user, err := h.repo.GetUserAccountByUsername(r.Context(), "system")
@@ -62,7 +67,7 @@ func (h *CitadelHandler) RefreshTokenHandler(w http.ResponseWriter, r *http.Requ
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		accessTokenString, err := auth.NewAccessToken(user.UserID.String(), auth.InstallOnly)
+		accessTokenString, err := auth.NewAccessToken(user.UserID.String(), auth.InstallOnly, user.RoleCode, h.jwtKey)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -100,6 +105,13 @@ func (h *CitadelHandler) RefreshTokenHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	user, err := h.repo.GetUserAccountByID(r.Context(), token.UserID)
+	if err != nil {
+		log.WithError(err).Error("user retrieve failure")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	refreshCreatedAt := time.Now().UTC()
 	refreshExpiresAt := refreshCreatedAt.AddDate(0, 0, 1)
 	refreshTokenString, err := h.repo.CreateRefreshToken(r.Context(), db.CreateRefreshTokenParams{token.UserID, refreshCreatedAt, refreshExpiresAt})
@@ -109,7 +121,7 @@ func (h *CitadelHandler) RefreshTokenHandler(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 
-	accessTokenString, err := auth.NewAccessToken(token.UserID.String(), auth.Unrestricted)
+	accessTokenString, err := auth.NewAccessToken(token.UserID.String(), auth.Unrestricted, user.RoleCode, h.jwtKey)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
@@ -124,7 +136,8 @@ func (h *CitadelHandler) RefreshTokenHandler(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(LoginResponseData{AccessToken: accessTokenString, IsInstalled: true})
 }
 
-func (h *CitadelHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+// LogoutHandler removes all refresh tokens to log out user
+func (h *TaskcafeHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie("refreshToken")
 	if err != nil {
 		if err == http.ErrNoCookie {
@@ -143,7 +156,8 @@ func (h *CitadelHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(LogoutResponseData{Status: "success"})
 }
 
-func (h *CitadelHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
+// LoginHandler creates a new refresh & access token for the user if given the correct credentials
+func (h *TaskcafeHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var requestData LoginRequestData
 	err := json.NewDecoder(r.Body).Decode(&requestData)
 	if err != nil {
@@ -164,9 +178,8 @@ func (h *CitadelHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(requestData.Password))
 	if err != nil {
 		log.WithFields(log.Fields{
-			"password":      requestData.Password,
-			"password_hash": user.PasswordHash,
-		}).Warn("password incorrect")
+			"username": requestData.Username,
+		}).Warn("password incorrect for user")
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -175,7 +188,7 @@ func (h *CitadelHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	refreshExpiresAt := refreshCreatedAt.AddDate(0, 0, 1)
 	refreshTokenString, err := h.repo.CreateRefreshToken(r.Context(), db.CreateRefreshTokenParams{user.UserID, refreshCreatedAt, refreshExpiresAt})
 
-	accessTokenString, err := auth.NewAccessToken(user.UserID.String(), auth.Unrestricted)
+	accessTokenString, err := auth.NewAccessToken(user.UserID.String(), auth.Unrestricted, user.RoleCode, h.jwtKey)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
@@ -190,7 +203,8 @@ func (h *CitadelHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(LoginResponseData{accessTokenString, false})
 }
 
-func (h *CitadelHandler) InstallHandler(w http.ResponseWriter, r *http.Request) {
+// InstallHandler creates first user on fresh install
+func (h *TaskcafeHandler) InstallHandler(w http.ResponseWriter, r *http.Request) {
 	if restricted, ok := r.Context().Value("restricted_mode").(auth.RestrictedMode); ok {
 		if restricted != auth.InstallOnly {
 			log.Warning("attempted to install without install only restriction")
@@ -212,8 +226,6 @@ func (h *CitadelHandler) InstallHandler(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	log.WithFields(log.Fields{"r": requestData}).Info("install")
 
 	createdAt := time.Now().UTC()
 	hashedPwd, err := bcrypt.GenerateFromPassword([]byte(requestData.User.Password), 14)
@@ -237,10 +249,12 @@ func (h *CitadelHandler) InstallHandler(w http.ResponseWriter, r *http.Request) 
 	refreshExpiresAt := refreshCreatedAt.AddDate(0, 0, 1)
 	refreshTokenString, err := h.repo.CreateRefreshToken(r.Context(), db.CreateRefreshTokenParams{user.UserID, refreshCreatedAt, refreshExpiresAt})
 
-	accessTokenString, err := auth.NewAccessToken(user.UserID.String(), auth.Unrestricted)
+	log.WithField("userID", user.UserID.String()).Info("creating install access token")
+	accessTokenString, err := auth.NewAccessToken(user.UserID.String(), auth.Unrestricted, user.RoleCode, h.jwtKey)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
+	log.Info(accessTokenString)
 
 	w.Header().Set("Content-type", "application/json")
 	http.SetCookie(w, &http.Cookie{
@@ -252,10 +266,11 @@ func (h *CitadelHandler) InstallHandler(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(LoginResponseData{accessTokenString, false})
 }
 
-func (rs authResource) Routes(citadelHandler CitadelHandler) chi.Router {
+// Routes registers all authentication routes
+func (rs authResource) Routes(taskcafeHandler TaskcafeHandler) chi.Router {
 	r := chi.NewRouter()
-	r.Post("/login", citadelHandler.LoginHandler)
-	r.Post("/refresh_token", citadelHandler.RefreshTokenHandler)
-	r.Post("/logout", citadelHandler.LogoutHandler)
+	r.Post("/login", taskcafeHandler.LoginHandler)
+	r.Post("/refresh_token", taskcafeHandler.RefreshTokenHandler)
+	r.Post("/logout", taskcafeHandler.LogoutHandler)
 	return r
 }

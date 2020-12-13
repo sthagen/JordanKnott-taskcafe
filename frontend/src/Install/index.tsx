@@ -1,20 +1,15 @@
 import React, { useEffect, useContext } from 'react';
 import axios from 'axios';
 import Register from 'shared/components/Register';
-import { Container, LoginWrapper } from './Styles';
-import { useCreateUserAccountMutation, useMeQuery, MeDocument, MeQuery } from 'shared/generated/graphql';
 import { useHistory } from 'react-router';
 import { getAccessToken, setAccessToken } from 'shared/utils/accessToken';
-import updateApolloCache from 'shared/utils/cache';
-import produce from 'immer';
-import { useApolloClient } from '@apollo/react-hooks';
-import UserIDContext from 'App/context';
+import UserContext from 'App/context';
 import jwtDecode from 'jwt-decode';
+import { Container, LoginWrapper } from './Styles';
 
 const Install = () => {
-  const client = useApolloClient();
   const history = useHistory();
-  const { setUserID } = useContext(UserIDContext);
+  const { setUser } = useContext(UserContext);
   useEffect(() => {
     fetch('/auth/refresh_token', {
       method: 'POST',
@@ -63,10 +58,18 @@ const Install = () => {
                     history.replace('/login');
                   } else {
                     const response: RefreshTokenResponse = await x.data;
-                    const { accessToken, isInstalled } = response;
-                    const claims: JWTToken = jwtDecode(accessToken);
-                    setUserID(claims.userId);
-                    setAccessToken(accessToken);
+                    const { accessToken: newToken, isInstalled } = response;
+                    const claims: JWTToken = jwtDecode(newToken);
+                    const currentUser = {
+                      id: claims.userId,
+                      roles: {
+                        org: claims.orgRole,
+                        teams: new Map<string, string>(),
+                        projects: new Map<string, string>(),
+                      },
+                    };
+                    setUser(currentUser);
+                    setAccessToken(newToken);
                     if (!isInstalled) {
                       history.replace('/install');
                     }

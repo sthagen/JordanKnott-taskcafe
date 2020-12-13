@@ -17,6 +17,7 @@ export type Scalars = {
 
 
 
+
 export enum RoleCode {
   Owner = 'owner',
   Admin = 'admin',
@@ -104,6 +105,7 @@ export type UserAccount = {
   createdAt: Scalars['Time'];
   fullName: Scalars['String'];
   initials: Scalars['String'];
+  bio: Scalars['String'];
   role: Role;
   username: Scalars['String'];
   profileIcon: ProfileIcon;
@@ -124,8 +126,7 @@ export type Project = {
   id: Scalars['ID'];
   createdAt: Scalars['Time'];
   name: Scalars['String'];
-  team: Team;
-  owner: Member;
+  team?: Maybe<Team>;
   taskGroups: Array<TaskGroup>;
   members: Array<Member>;
   labels: Array<ProjectLabel>;
@@ -162,6 +163,7 @@ export type Task = {
   description?: Maybe<Scalars['String']>;
   dueDate?: Maybe<Scalars['Time']>;
   complete: Scalars['Boolean'];
+  completedAt?: Maybe<Scalars['Time']>;
   assigned: Array<Member>;
   labels: Array<TaskLabel>;
   checklists: Array<TaskChecklist>;
@@ -192,24 +194,41 @@ export type TaskChecklist = {
   items: Array<TaskChecklistItem>;
 };
 
+export enum RoleLevel {
+  Admin = 'ADMIN',
+  Member = 'MEMBER'
+}
+
+export enum ActionLevel {
+  Org = 'ORG',
+  Team = 'TEAM',
+  Project = 'PROJECT'
+}
+
+export enum ObjectType {
+  Org = 'ORG',
+  Team = 'TEAM',
+  Project = 'PROJECT',
+  Task = 'TASK',
+  TaskGroup = 'TASK_GROUP',
+  TaskChecklist = 'TASK_CHECKLIST',
+  TaskChecklistItem = 'TASK_CHECKLIST_ITEM'
+}
+
 export type Query = {
    __typename?: 'Query';
-  organizations: Array<Organization>;
-  users: Array<UserAccount>;
-  findUser: UserAccount;
   findProject: Project;
   findTask: Task;
-  projects: Array<Project>;
   findTeam: Team;
-  teams: Array<Team>;
+  findUser: UserAccount;
   labelColors: Array<LabelColor>;
+  me: MePayload;
+  notifications: Array<Notification>;
+  organizations: Array<Organization>;
+  projects: Array<Project>;
   taskGroups: Array<TaskGroup>;
-  me: UserAccount;
-};
-
-
-export type QueryFindUserArgs = {
-  input: FindUser;
+  teams: Array<Team>;
+  users: Array<UserAccount>;
 };
 
 
@@ -223,13 +242,18 @@ export type QueryFindTaskArgs = {
 };
 
 
-export type QueryProjectsArgs = {
-  input?: Maybe<ProjectsFilter>;
+export type QueryFindTeamArgs = {
+  input: FindTeam;
 };
 
 
-export type QueryFindTeamArgs = {
-  input: FindTeam;
+export type QueryFindUserArgs = {
+  input: FindUser;
+};
+
+
+export type QueryProjectsArgs = {
+  input?: Maybe<ProjectsFilter>;
 };
 
 export type Mutation = {
@@ -255,15 +279,16 @@ export type Mutation = {
   deleteTaskChecklist: DeleteTaskChecklistPayload;
   deleteTaskChecklistItem: DeleteTaskChecklistItemPayload;
   deleteTaskGroup: DeleteTaskGroupPayload;
+  deleteTaskGroupTasks: DeleteTaskGroupTasksPayload;
   deleteTeam: DeleteTeamPayload;
   deleteTeamMember: DeleteTeamMemberPayload;
   deleteUserAccount: DeleteUserAccountPayload;
+  duplicateTaskGroup: DuplicateTaskGroupPayload;
   logoutUser: Scalars['Boolean'];
   removeTaskLabel: Task;
-  setProjectOwner: SetProjectOwnerPayload;
   setTaskChecklistItemComplete: TaskChecklistItem;
   setTaskComplete: Task;
-  setTeamOwner: SetTeamOwnerPayload;
+  sortTaskGroup: SortTaskGroupPayload;
   toggleTaskLabel: ToggleTaskLabelPayload;
   unassignTask: Task;
   updateProjectLabel: ProjectLabel;
@@ -282,6 +307,7 @@ export type Mutation = {
   updateTaskLocation: UpdateTaskLocationPayload;
   updateTaskName: Task;
   updateTeamMemberRole: UpdateTeamMemberRolePayload;
+  updateUserInfo: UpdateUserInfoPayload;
   updateUserPassword: UpdateUserPasswordPayload;
   updateUserRole: UpdateUserRolePayload;
 };
@@ -387,6 +413,11 @@ export type MutationDeleteTaskGroupArgs = {
 };
 
 
+export type MutationDeleteTaskGroupTasksArgs = {
+  input: DeleteTaskGroupTasks;
+};
+
+
 export type MutationDeleteTeamArgs = {
   input: DeleteTeam;
 };
@@ -402,6 +433,11 @@ export type MutationDeleteUserAccountArgs = {
 };
 
 
+export type MutationDuplicateTaskGroupArgs = {
+  input: DuplicateTaskGroup;
+};
+
+
 export type MutationLogoutUserArgs = {
   input: LogoutUser;
 };
@@ -409,11 +445,6 @@ export type MutationLogoutUserArgs = {
 
 export type MutationRemoveTaskLabelArgs = {
   input?: Maybe<RemoveTaskLabelInput>;
-};
-
-
-export type MutationSetProjectOwnerArgs = {
-  input: SetProjectOwner;
 };
 
 
@@ -427,8 +458,8 @@ export type MutationSetTaskCompleteArgs = {
 };
 
 
-export type MutationSetTeamOwnerArgs = {
-  input: SetTeamOwner;
+export type MutationSortTaskGroupArgs = {
+  input: SortTaskGroup;
 };
 
 
@@ -522,6 +553,11 @@ export type MutationUpdateTeamMemberRoleArgs = {
 };
 
 
+export type MutationUpdateUserInfoArgs = {
+  input: UpdateUserInfo;
+};
+
+
 export type MutationUpdateUserPasswordArgs = {
   input: UpdateUserPassword;
 };
@@ -531,16 +567,35 @@ export type MutationUpdateUserRoleArgs = {
   input: UpdateUserRole;
 };
 
+export type TeamRole = {
+   __typename?: 'TeamRole';
+  teamID: Scalars['UUID'];
+  roleCode: RoleCode;
+};
+
+export type ProjectRole = {
+   __typename?: 'ProjectRole';
+  projectID: Scalars['UUID'];
+  roleCode: RoleCode;
+};
+
+export type MePayload = {
+   __typename?: 'MePayload';
+  user: UserAccount;
+  teamRoles: Array<TeamRole>;
+  projectRoles: Array<ProjectRole>;
+};
+
 export type ProjectsFilter = {
   teamID?: Maybe<Scalars['UUID']>;
 };
 
 export type FindUser = {
-  userId: Scalars['String'];
+  userID: Scalars['UUID'];
 };
 
 export type FindProject = {
-  projectId: Scalars['String'];
+  projectID: Scalars['UUID'];
 };
 
 export type FindTask = {
@@ -551,9 +606,44 @@ export type FindTeam = {
   teamID: Scalars['UUID'];
 };
 
+export enum EntityType {
+  Task = 'TASK'
+}
+
+export enum ActorType {
+  User = 'USER'
+}
+
+export enum ActionType {
+  TaskMemberAdded = 'TASK_MEMBER_ADDED'
+}
+
+export type NotificationActor = {
+   __typename?: 'NotificationActor';
+  id: Scalars['UUID'];
+  type: ActorType;
+  name: Scalars['String'];
+};
+
+export type NotificationEntity = {
+   __typename?: 'NotificationEntity';
+  id: Scalars['UUID'];
+  type: EntityType;
+  name: Scalars['String'];
+};
+
+export type Notification = {
+   __typename?: 'Notification';
+  id: Scalars['ID'];
+  entity: NotificationEntity;
+  actionType: ActionType;
+  actor: NotificationActor;
+  read: Scalars['Boolean'];
+  createdAt: Scalars['Time'];
+};
+
 export type NewProject = {
-  userID: Scalars['UUID'];
-  teamID: Scalars['UUID'];
+  teamID?: Maybe<Scalars['UUID']>;
   name: Scalars['String'];
 };
 
@@ -633,20 +723,8 @@ export type UpdateProjectMemberRolePayload = {
   member: Member;
 };
 
-export type SetProjectOwner = {
-  projectID: Scalars['UUID'];
-  ownerID: Scalars['UUID'];
-};
-
-export type SetProjectOwnerPayload = {
-   __typename?: 'SetProjectOwnerPayload';
-  ok: Scalars['Boolean'];
-  prevOwner: Member;
-  newOwner: Member;
-};
-
 export type NewTask = {
-  taskGroupID: Scalars['String'];
+  taskGroupID: Scalars['UUID'];
   name: Scalars['String'];
   position: Scalars['Float'];
 };
@@ -689,34 +767,34 @@ export type NewTaskLocation = {
 };
 
 export type DeleteTaskInput = {
-  taskID: Scalars['String'];
+  taskID: Scalars['UUID'];
 };
 
 export type DeleteTaskPayload = {
    __typename?: 'DeleteTaskPayload';
-  taskID: Scalars['String'];
+  taskID: Scalars['UUID'];
 };
 
 export type UpdateTaskName = {
-  taskID: Scalars['String'];
+  taskID: Scalars['UUID'];
   name: Scalars['String'];
 };
 
 export type UpdateTaskChecklistItemLocation = {
-  checklistID: Scalars['UUID'];
-  checklistItemID: Scalars['UUID'];
+  taskChecklistID: Scalars['UUID'];
+  taskChecklistItemID: Scalars['UUID'];
   position: Scalars['Float'];
 };
 
 export type UpdateTaskChecklistItemLocationPayload = {
    __typename?: 'UpdateTaskChecklistItemLocationPayload';
-  checklistID: Scalars['UUID'];
+  taskChecklistID: Scalars['UUID'];
   prevChecklistID: Scalars['UUID'];
   checklistItem: TaskChecklistItem;
 };
 
 export type UpdateTaskChecklistLocation = {
-  checklistID: Scalars['UUID'];
+  taskChecklistID: Scalars['UUID'];
   position: Scalars['Float'];
 };
 
@@ -772,6 +850,44 @@ export type DeleteTaskChecklistPayload = {
   taskChecklist: TaskChecklist;
 };
 
+export type DeleteTaskGroupTasks = {
+  taskGroupID: Scalars['UUID'];
+};
+
+export type DeleteTaskGroupTasksPayload = {
+   __typename?: 'DeleteTaskGroupTasksPayload';
+  taskGroupID: Scalars['UUID'];
+  tasks: Array<Scalars['UUID']>;
+};
+
+export type TaskPositionUpdate = {
+  taskID: Scalars['UUID'];
+  position: Scalars['Float'];
+};
+
+export type SortTaskGroupPayload = {
+   __typename?: 'SortTaskGroupPayload';
+  taskGroupID: Scalars['UUID'];
+  tasks: Array<Task>;
+};
+
+export type SortTaskGroup = {
+  taskGroupID: Scalars['UUID'];
+  tasks: Array<TaskPositionUpdate>;
+};
+
+export type DuplicateTaskGroup = {
+  projectID: Scalars['UUID'];
+  taskGroupID: Scalars['UUID'];
+  name: Scalars['String'];
+  position: Scalars['Float'];
+};
+
+export type DuplicateTaskGroupPayload = {
+   __typename?: 'DuplicateTaskGroupPayload';
+  taskGroup: TaskGroup;
+};
+
 export type NewTaskGroupLocation = {
   taskGroupID: Scalars['UUID'];
   position: Scalars['Float'];
@@ -794,7 +910,7 @@ export type DeleteTaskGroupPayload = {
 };
 
 export type NewTaskGroup = {
-  projectID: Scalars['String'];
+  projectID: Scalars['UUID'];
   name: Scalars['String'];
   position: Scalars['Float'];
 };
@@ -805,6 +921,7 @@ export type AddTaskLabelInput = {
 };
 
 export type RemoveTaskLabelInput = {
+  taskID: Scalars['UUID'];
   taskLabelID: Scalars['UUID'];
 };
 
@@ -868,19 +985,20 @@ export type UpdateTeamMemberRole = {
 export type UpdateTeamMemberRolePayload = {
    __typename?: 'UpdateTeamMemberRolePayload';
   ok: Scalars['Boolean'];
+  teamID: Scalars['UUID'];
   member: Member;
 };
 
-export type SetTeamOwner = {
-  teamID: Scalars['UUID'];
-  userID: Scalars['UUID'];
+export type UpdateUserInfoPayload = {
+   __typename?: 'UpdateUserInfoPayload';
+  user: UserAccount;
 };
 
-export type SetTeamOwnerPayload = {
-   __typename?: 'SetTeamOwnerPayload';
-  ok: Scalars['Boolean'];
-  prevOwner: Member;
-  newOwner: Member;
+export type UpdateUserInfo = {
+  name: Scalars['String'];
+  initials: Scalars['String'];
+  email: Scalars['String'];
+  bio: Scalars['String'];
 };
 
 export type UpdateUserPassword = {
@@ -905,7 +1023,7 @@ export type UpdateUserRolePayload = {
 };
 
 export type NewRefreshToken = {
-  userId: Scalars['String'];
+  userID: Scalars['UUID'];
 };
 
 export type NewUserAccount = {
@@ -918,7 +1036,7 @@ export type NewUserAccount = {
 };
 
 export type LogoutUser = {
-  userID: Scalars['String'];
+  userID: Scalars['UUID'];
 };
 
 export type DeleteUserAccount = {
@@ -966,8 +1084,7 @@ export type ClearProfileAvatarMutation = (
 );
 
 export type CreateProjectMutationVariables = {
-  teamID: Scalars['UUID'];
-  userID: Scalars['UUID'];
+  teamID?: Maybe<Scalars['UUID']>;
   name: Scalars['String'];
 };
 
@@ -977,10 +1094,10 @@ export type CreateProjectMutation = (
   & { createProject: (
     { __typename?: 'Project' }
     & Pick<Project, 'id' | 'name'>
-    & { team: (
+    & { team?: Maybe<(
       { __typename?: 'Team' }
       & Pick<Team, 'id' | 'name'>
-    ) }
+    )> }
   ) }
 );
 
@@ -1004,7 +1121,7 @@ export type CreateProjectLabelMutation = (
 );
 
 export type CreateTaskGroupMutationVariables = {
-  projectID: Scalars['String'];
+  projectID: Scalars['UUID'];
   name: Scalars['String'];
   position: Scalars['Float'];
 };
@@ -1032,7 +1149,7 @@ export type DeleteProjectLabelMutation = (
 );
 
 export type DeleteTaskMutationVariables = {
-  taskID: Scalars['String'];
+  taskID: Scalars['UUID'];
 };
 
 
@@ -1066,7 +1183,7 @@ export type DeleteTaskGroupMutation = (
 );
 
 export type FindProjectQueryVariables = {
-  projectId: Scalars['String'];
+  projectID: Scalars['UUID'];
 };
 
 
@@ -1075,7 +1192,10 @@ export type FindProjectQuery = (
   & { findProject: (
     { __typename?: 'Project' }
     & Pick<Project, 'name'>
-    & { members: Array<(
+    & { team?: Maybe<(
+      { __typename?: 'Team' }
+      & Pick<Team, 'id'>
+    )>, members: Array<(
       { __typename?: 'Member' }
       & Pick<Member, 'id' | 'fullName' | 'username'>
       & { role: (
@@ -1146,7 +1266,7 @@ export type FindTaskQuery = (
     & Pick<Task, 'id' | 'name' | 'description' | 'dueDate' | 'position' | 'complete'>
     & { taskGroup: (
       { __typename?: 'TaskGroup' }
-      & Pick<TaskGroup, 'id'>
+      & Pick<TaskGroup, 'id' | 'name'>
     ), badges: (
       { __typename?: 'TaskBadges' }
       & { checklist?: Maybe<(
@@ -1179,12 +1299,22 @@ export type FindTaskQuery = (
         & Pick<ProfileIcon, 'url' | 'initials' | 'bgColor'>
       ) }
     )> }
+  ), me: (
+    { __typename?: 'MePayload' }
+    & { user: (
+      { __typename?: 'UserAccount' }
+      & Pick<UserAccount, 'id' | 'fullName'>
+      & { profileIcon: (
+        { __typename?: 'ProfileIcon' }
+        & Pick<ProfileIcon, 'initials' | 'bgColor' | 'url'>
+      ) }
+    ) }
   ) }
 );
 
 export type TaskFieldsFragment = (
   { __typename?: 'Task' }
-  & Pick<Task, 'id' | 'name' | 'description' | 'dueDate' | 'complete' | 'position'>
+  & Pick<Task, 'id' | 'name' | 'description' | 'dueDate' | 'complete' | 'completedAt' | 'position'>
   & { badges: (
     { __typename?: 'TaskBadges' }
     & { checklist?: Maybe<(
@@ -1229,10 +1359,10 @@ export type GetProjectsQuery = (
   )>, projects: Array<(
     { __typename?: 'Project' }
     & Pick<Project, 'id' | 'name'>
-    & { team: (
+    & { team?: Maybe<(
       { __typename?: 'Team' }
       & Pick<Team, 'id' | 'name'>
-    ) }
+    )> }
   )> }
 );
 
@@ -1242,12 +1372,21 @@ export type MeQueryVariables = {};
 export type MeQuery = (
   { __typename?: 'Query' }
   & { me: (
-    { __typename?: 'UserAccount' }
-    & Pick<UserAccount, 'id' | 'fullName'>
-    & { profileIcon: (
-      { __typename?: 'ProfileIcon' }
-      & Pick<ProfileIcon, 'initials' | 'bgColor' | 'url'>
-    ) }
+    { __typename?: 'MePayload' }
+    & { user: (
+      { __typename?: 'UserAccount' }
+      & Pick<UserAccount, 'id' | 'fullName' | 'username' | 'email' | 'bio'>
+      & { profileIcon: (
+        { __typename?: 'ProfileIcon' }
+        & Pick<ProfileIcon, 'initials' | 'bgColor' | 'url'>
+      ) }
+    ), teamRoles: Array<(
+      { __typename?: 'TeamRole' }
+      & Pick<TeamRole, 'teamID' | 'roleCode'>
+    )>, projectRoles: Array<(
+      { __typename?: 'ProjectRole' }
+      & Pick<ProjectRole, 'projectID' | 'roleCode'>
+    )> }
   ) }
 );
 
@@ -1311,35 +1450,6 @@ export type DeleteProjectMemberMutation = (
   ) }
 );
 
-export type SetProjectOwnerMutationVariables = {
-  projectID: Scalars['UUID'];
-  ownerID: Scalars['UUID'];
-};
-
-
-export type SetProjectOwnerMutation = (
-  { __typename?: 'Mutation' }
-  & { setProjectOwner: (
-    { __typename?: 'SetProjectOwnerPayload' }
-    & Pick<SetProjectOwnerPayload, 'ok'>
-    & { newOwner: (
-      { __typename?: 'Member' }
-      & Pick<Member, 'id'>
-      & { role: (
-        { __typename?: 'Role' }
-        & Pick<Role, 'code' | 'name'>
-      ) }
-    ), prevOwner: (
-      { __typename?: 'Member' }
-      & Pick<Member, 'id'>
-      & { role: (
-        { __typename?: 'Role' }
-        & Pick<Role, 'code' | 'name'>
-      ) }
-    ) }
-  ) }
-);
-
 export type UpdateProjectMemberRoleMutationVariables = {
   projectID: Scalars['UUID'];
   userID: Scalars['UUID'];
@@ -1364,7 +1474,7 @@ export type UpdateProjectMemberRoleMutation = (
 );
 
 export type CreateTaskMutationVariables = {
-  taskGroupID: Scalars['String'];
+  taskGroupID: Scalars['UUID'];
   name: Scalars['String'];
   position: Scalars['Float'];
 };
@@ -1475,8 +1585,8 @@ export type SetTaskCompleteMutation = (
 );
 
 export type UpdateTaskChecklistItemLocationMutationVariables = {
-  checklistID: Scalars['UUID'];
-  checklistItemID: Scalars['UUID'];
+  taskChecklistID: Scalars['UUID'];
+  taskChecklistItemID: Scalars['UUID'];
   position: Scalars['Float'];
 };
 
@@ -1485,7 +1595,7 @@ export type UpdateTaskChecklistItemLocationMutation = (
   { __typename?: 'Mutation' }
   & { updateTaskChecklistItemLocation: (
     { __typename?: 'UpdateTaskChecklistItemLocationPayload' }
-    & Pick<UpdateTaskChecklistItemLocationPayload, 'checklistID' | 'prevChecklistID'>
+    & Pick<UpdateTaskChecklistItemLocationPayload, 'taskChecklistID' | 'prevChecklistID'>
     & { checklistItem: (
       { __typename?: 'TaskChecklistItem' }
       & Pick<TaskChecklistItem, 'id' | 'taskChecklistID' | 'position'>
@@ -1508,7 +1618,7 @@ export type UpdateTaskChecklistItemNameMutation = (
 );
 
 export type UpdateTaskChecklistLocationMutationVariables = {
-  checklistID: Scalars['UUID'];
+  taskChecklistID: Scalars['UUID'];
   position: Scalars['Float'];
 };
 
@@ -1538,6 +1648,60 @@ export type UpdateTaskChecklistNameMutation = (
     & { items: Array<(
       { __typename?: 'TaskChecklistItem' }
       & Pick<TaskChecklistItem, 'id' | 'name' | 'taskChecklistID' | 'complete' | 'position'>
+    )> }
+  ) }
+);
+
+export type DeleteTaskGroupTasksMutationVariables = {
+  taskGroupID: Scalars['UUID'];
+};
+
+
+export type DeleteTaskGroupTasksMutation = (
+  { __typename?: 'Mutation' }
+  & { deleteTaskGroupTasks: (
+    { __typename?: 'DeleteTaskGroupTasksPayload' }
+    & Pick<DeleteTaskGroupTasksPayload, 'tasks' | 'taskGroupID'>
+  ) }
+);
+
+export type DuplicateTaskGroupMutationVariables = {
+  taskGroupID: Scalars['UUID'];
+  name: Scalars['String'];
+  position: Scalars['Float'];
+  projectID: Scalars['UUID'];
+};
+
+
+export type DuplicateTaskGroupMutation = (
+  { __typename?: 'Mutation' }
+  & { duplicateTaskGroup: (
+    { __typename?: 'DuplicateTaskGroupPayload' }
+    & { taskGroup: (
+      { __typename?: 'TaskGroup' }
+      & Pick<TaskGroup, 'id' | 'name' | 'position'>
+      & { tasks: Array<(
+        { __typename?: 'Task' }
+        & TaskFieldsFragment
+      )> }
+    ) }
+  ) }
+);
+
+export type SortTaskGroupMutationVariables = {
+  tasks: Array<TaskPositionUpdate>;
+  taskGroupID: Scalars['UUID'];
+};
+
+
+export type SortTaskGroupMutation = (
+  { __typename?: 'Mutation' }
+  & { sortTaskGroup: (
+    { __typename?: 'SortTaskGroupPayload' }
+    & Pick<SortTaskGroupPayload, 'taskGroupID'>
+    & { tasks: Array<(
+      { __typename?: 'Task' }
+      & Pick<Task, 'id' | 'position'>
     )> }
   ) }
 );
@@ -1671,10 +1835,10 @@ export type GetTeamQuery = (
   ), projects: Array<(
     { __typename?: 'Project' }
     & Pick<Project, 'id' | 'name'>
-    & { team: (
+    & { team?: Maybe<(
       { __typename?: 'Team' }
       & Pick<Team, 'id' | 'name'>
-    ) }
+    )> }
   )>, users: Array<(
     { __typename?: 'UserAccount' }
     & Pick<UserAccount, 'id' | 'email' | 'fullName' | 'username'>
@@ -1706,6 +1870,29 @@ export type GetTeamQuery = (
   )> }
 );
 
+export type UpdateTeamMemberRoleMutationVariables = {
+  teamID: Scalars['UUID'];
+  userID: Scalars['UUID'];
+  roleCode: RoleCode;
+};
+
+
+export type UpdateTeamMemberRoleMutation = (
+  { __typename?: 'Mutation' }
+  & { updateTeamMemberRole: (
+    { __typename?: 'UpdateTeamMemberRolePayload' }
+    & Pick<UpdateTeamMemberRolePayload, 'teamID'>
+    & { member: (
+      { __typename?: 'Member' }
+      & Pick<Member, 'id'>
+      & { role: (
+        { __typename?: 'Role' }
+        & Pick<Role, 'code' | 'name'>
+      ) }
+    ) }
+  ) }
+);
+
 export type ToggleTaskLabelMutationVariables = {
   taskID: Scalars['UUID'];
   projectLabelID: Scalars['UUID'];
@@ -1733,6 +1920,40 @@ export type ToggleTaskLabelMutation = (
         ) }
       )> }
     ) }
+  ) }
+);
+
+export type TopNavbarQueryVariables = {};
+
+
+export type TopNavbarQuery = (
+  { __typename?: 'Query' }
+  & { notifications: Array<(
+    { __typename?: 'Notification' }
+    & Pick<Notification, 'createdAt' | 'read' | 'id' | 'actionType'>
+    & { entity: (
+      { __typename?: 'NotificationEntity' }
+      & Pick<NotificationEntity, 'id' | 'type' | 'name'>
+    ), actor: (
+      { __typename?: 'NotificationActor' }
+      & Pick<NotificationActor, 'id' | 'type' | 'name'>
+    ) }
+  )>, me: (
+    { __typename?: 'MePayload' }
+    & { user: (
+      { __typename?: 'UserAccount' }
+      & Pick<UserAccount, 'id' | 'fullName'>
+      & { profileIcon: (
+        { __typename?: 'ProfileIcon' }
+        & Pick<ProfileIcon, 'initials' | 'bgColor' | 'url'>
+      ) }
+    ), teamRoles: Array<(
+      { __typename?: 'TeamRole' }
+      & Pick<TeamRole, 'teamID' | 'roleCode'>
+    )>, projectRoles: Array<(
+      { __typename?: 'ProjectRole' }
+      & Pick<ProjectRole, 'projectID' | 'roleCode'>
+    )> }
   ) }
 );
 
@@ -1853,7 +2074,7 @@ export type UpdateTaskLocationMutation = (
 );
 
 export type UpdateTaskNameMutationVariables = {
-  taskID: Scalars['String'];
+  taskID: Scalars['UUID'];
   name: Scalars['String'];
 };
 
@@ -1880,7 +2101,7 @@ export type CreateUserAccountMutation = (
   { __typename?: 'Mutation' }
   & { createUserAccount: (
     { __typename?: 'UserAccount' }
-    & Pick<UserAccount, 'id' | 'email' | 'fullName' | 'initials' | 'username'>
+    & Pick<UserAccount, 'id' | 'email' | 'fullName' | 'initials' | 'username' | 'bio'>
     & { profileIcon: (
       { __typename?: 'ProfileIcon' }
       & Pick<ProfileIcon, 'url' | 'initials' | 'bgColor'>
@@ -1924,6 +2145,43 @@ export type DeleteUserAccountMutation = (
       { __typename?: 'UserAccount' }
       & Pick<UserAccount, 'id'>
     ) }
+  ) }
+);
+
+export type UpdateUserInfoMutationVariables = {
+  name: Scalars['String'];
+  initials: Scalars['String'];
+  email: Scalars['String'];
+  bio: Scalars['String'];
+};
+
+
+export type UpdateUserInfoMutation = (
+  { __typename?: 'Mutation' }
+  & { updateUserInfo: (
+    { __typename?: 'UpdateUserInfoPayload' }
+    & { user: (
+      { __typename?: 'UserAccount' }
+      & Pick<UserAccount, 'id' | 'email' | 'fullName' | 'bio'>
+      & { profileIcon: (
+        { __typename?: 'ProfileIcon' }
+        & Pick<ProfileIcon, 'initials'>
+      ) }
+    ) }
+  ) }
+);
+
+export type UpdateUserPasswordMutationVariables = {
+  userID: Scalars['UUID'];
+  password: Scalars['String'];
+};
+
+
+export type UpdateUserPasswordMutation = (
+  { __typename?: 'Mutation' }
+  & { updateUserPassword: (
+    { __typename?: 'UpdateUserPasswordPayload' }
+    & Pick<UpdateUserPasswordPayload, 'ok'>
   ) }
 );
 
@@ -1991,6 +2249,7 @@ export const TaskFieldsFragmentDoc = gql`
   description
   dueDate
   complete
+  completedAt
   position
   badges {
     checklist {
@@ -2104,8 +2363,8 @@ export type ClearProfileAvatarMutationHookResult = ReturnType<typeof useClearPro
 export type ClearProfileAvatarMutationResult = ApolloReactCommon.MutationResult<ClearProfileAvatarMutation>;
 export type ClearProfileAvatarMutationOptions = ApolloReactCommon.BaseMutationOptions<ClearProfileAvatarMutation, ClearProfileAvatarMutationVariables>;
 export const CreateProjectDocument = gql`
-    mutation createProject($teamID: UUID!, $userID: UUID!, $name: String!) {
-  createProject(input: {teamID: $teamID, userID: $userID, name: $name}) {
+    mutation createProject($teamID: UUID, $name: String!) {
+  createProject(input: {teamID: $teamID, name: $name}) {
     id
     name
     team {
@@ -2131,7 +2390,6 @@ export type CreateProjectMutationFn = ApolloReactCommon.MutationFunction<CreateP
  * const [createProjectMutation, { data, loading, error }] = useCreateProjectMutation({
  *   variables: {
  *      teamID: // value for 'teamID'
- *      userID: // value for 'userID'
  *      name: // value for 'name'
  *   },
  * });
@@ -2185,7 +2443,7 @@ export type CreateProjectLabelMutationHookResult = ReturnType<typeof useCreatePr
 export type CreateProjectLabelMutationResult = ApolloReactCommon.MutationResult<CreateProjectLabelMutation>;
 export type CreateProjectLabelMutationOptions = ApolloReactCommon.BaseMutationOptions<CreateProjectLabelMutation, CreateProjectLabelMutationVariables>;
 export const CreateTaskGroupDocument = gql`
-    mutation createTaskGroup($projectID: String!, $name: String!, $position: Float!) {
+    mutation createTaskGroup($projectID: UUID!, $name: String!, $position: Float!) {
   createTaskGroup(input: {projectID: $projectID, name: $name, position: $position}) {
     id
     name
@@ -2253,7 +2511,7 @@ export type DeleteProjectLabelMutationHookResult = ReturnType<typeof useDeletePr
 export type DeleteProjectLabelMutationResult = ApolloReactCommon.MutationResult<DeleteProjectLabelMutation>;
 export type DeleteProjectLabelMutationOptions = ApolloReactCommon.BaseMutationOptions<DeleteProjectLabelMutation, DeleteProjectLabelMutationVariables>;
 export const DeleteTaskDocument = gql`
-    mutation deleteTask($taskID: String!) {
+    mutation deleteTask($taskID: UUID!) {
   deleteTask(input: {taskID: $taskID}) {
     taskID
   }
@@ -2325,9 +2583,12 @@ export type DeleteTaskGroupMutationHookResult = ReturnType<typeof useDeleteTaskG
 export type DeleteTaskGroupMutationResult = ApolloReactCommon.MutationResult<DeleteTaskGroupMutation>;
 export type DeleteTaskGroupMutationOptions = ApolloReactCommon.BaseMutationOptions<DeleteTaskGroupMutation, DeleteTaskGroupMutationVariables>;
 export const FindProjectDocument = gql`
-    query findProject($projectId: String!) {
-  findProject(input: {projectId: $projectId}) {
+    query findProject($projectID: UUID!) {
+  findProject(input: {projectID: $projectID}) {
     name
+    team {
+      id
+    }
     members {
       id
       fullName
@@ -2418,7 +2679,7 @@ export const FindProjectDocument = gql`
  * @example
  * const { data, loading, error } = useFindProjectQuery({
  *   variables: {
- *      projectId: // value for 'projectId'
+ *      projectID: // value for 'projectID'
  *   },
  * });
  */
@@ -2442,6 +2703,7 @@ export const FindTaskDocument = gql`
     complete
     taskGroup {
       id
+      name
     }
     badges {
       checklist {
@@ -2483,6 +2745,17 @@ export const FindTaskDocument = gql`
         url
         initials
         bgColor
+      }
+    }
+  }
+  me {
+    user {
+      id
+      fullName
+      profileIcon {
+        initials
+        bgColor
+        url
       }
     }
   }
@@ -2563,12 +2836,25 @@ export type GetProjectsQueryResult = ApolloReactCommon.QueryResult<GetProjectsQu
 export const MeDocument = gql`
     query me {
   me {
-    id
-    fullName
-    profileIcon {
-      initials
-      bgColor
-      url
+    user {
+      id
+      fullName
+      username
+      email
+      bio
+      profileIcon {
+        initials
+        bgColor
+        url
+      }
+    }
+    teamRoles {
+      teamID
+      roleCode
+    }
+    projectRoles {
+      projectID
+      roleCode
     }
   }
 }
@@ -2717,53 +3003,6 @@ export function useDeleteProjectMemberMutation(baseOptions?: ApolloReactHooks.Mu
 export type DeleteProjectMemberMutationHookResult = ReturnType<typeof useDeleteProjectMemberMutation>;
 export type DeleteProjectMemberMutationResult = ApolloReactCommon.MutationResult<DeleteProjectMemberMutation>;
 export type DeleteProjectMemberMutationOptions = ApolloReactCommon.BaseMutationOptions<DeleteProjectMemberMutation, DeleteProjectMemberMutationVariables>;
-export const SetProjectOwnerDocument = gql`
-    mutation setProjectOwner($projectID: UUID!, $ownerID: UUID!) {
-  setProjectOwner(input: {projectID: $projectID, ownerID: $ownerID}) {
-    ok
-    newOwner {
-      id
-      role {
-        code
-        name
-      }
-    }
-    prevOwner {
-      id
-      role {
-        code
-        name
-      }
-    }
-  }
-}
-    `;
-export type SetProjectOwnerMutationFn = ApolloReactCommon.MutationFunction<SetProjectOwnerMutation, SetProjectOwnerMutationVariables>;
-
-/**
- * __useSetProjectOwnerMutation__
- *
- * To run a mutation, you first call `useSetProjectOwnerMutation` within a React component and pass it any options that fit your needs.
- * When your component renders, `useSetProjectOwnerMutation` returns a tuple that includes:
- * - A mutate function that you can call at any time to execute the mutation
- * - An object with fields that represent the current status of the mutation's execution
- *
- * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
- *
- * @example
- * const [setProjectOwnerMutation, { data, loading, error }] = useSetProjectOwnerMutation({
- *   variables: {
- *      projectID: // value for 'projectID'
- *      ownerID: // value for 'ownerID'
- *   },
- * });
- */
-export function useSetProjectOwnerMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<SetProjectOwnerMutation, SetProjectOwnerMutationVariables>) {
-        return ApolloReactHooks.useMutation<SetProjectOwnerMutation, SetProjectOwnerMutationVariables>(SetProjectOwnerDocument, baseOptions);
-      }
-export type SetProjectOwnerMutationHookResult = ReturnType<typeof useSetProjectOwnerMutation>;
-export type SetProjectOwnerMutationResult = ApolloReactCommon.MutationResult<SetProjectOwnerMutation>;
-export type SetProjectOwnerMutationOptions = ApolloReactCommon.BaseMutationOptions<SetProjectOwnerMutation, SetProjectOwnerMutationVariables>;
 export const UpdateProjectMemberRoleDocument = gql`
     mutation updateProjectMemberRole($projectID: UUID!, $userID: UUID!, $roleCode: RoleCode!) {
   updateProjectMemberRole(input: {projectID: $projectID, userID: $userID, roleCode: $roleCode}) {
@@ -2806,7 +3045,7 @@ export type UpdateProjectMemberRoleMutationHookResult = ReturnType<typeof useUpd
 export type UpdateProjectMemberRoleMutationResult = ApolloReactCommon.MutationResult<UpdateProjectMemberRoleMutation>;
 export type UpdateProjectMemberRoleMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateProjectMemberRoleMutation, UpdateProjectMemberRoleMutationVariables>;
 export const CreateTaskDocument = gql`
-    mutation createTask($taskGroupID: String!, $name: String!, $position: Float!) {
+    mutation createTask($taskGroupID: UUID!, $name: String!, $position: Float!) {
   createTask(input: {taskGroupID: $taskGroupID, name: $name, position: $position}) {
     ...TaskFields
   }
@@ -3059,9 +3298,9 @@ export type SetTaskCompleteMutationHookResult = ReturnType<typeof useSetTaskComp
 export type SetTaskCompleteMutationResult = ApolloReactCommon.MutationResult<SetTaskCompleteMutation>;
 export type SetTaskCompleteMutationOptions = ApolloReactCommon.BaseMutationOptions<SetTaskCompleteMutation, SetTaskCompleteMutationVariables>;
 export const UpdateTaskChecklistItemLocationDocument = gql`
-    mutation updateTaskChecklistItemLocation($checklistID: UUID!, $checklistItemID: UUID!, $position: Float!) {
-  updateTaskChecklistItemLocation(input: {checklistID: $checklistID, checklistItemID: $checklistItemID, position: $position}) {
-    checklistID
+    mutation updateTaskChecklistItemLocation($taskChecklistID: UUID!, $taskChecklistItemID: UUID!, $position: Float!) {
+  updateTaskChecklistItemLocation(input: {taskChecklistID: $taskChecklistID, taskChecklistItemID: $taskChecklistItemID, position: $position}) {
+    taskChecklistID
     prevChecklistID
     checklistItem {
       id
@@ -3086,8 +3325,8 @@ export type UpdateTaskChecklistItemLocationMutationFn = ApolloReactCommon.Mutati
  * @example
  * const [updateTaskChecklistItemLocationMutation, { data, loading, error }] = useUpdateTaskChecklistItemLocationMutation({
  *   variables: {
- *      checklistID: // value for 'checklistID'
- *      checklistItemID: // value for 'checklistItemID'
+ *      taskChecklistID: // value for 'taskChecklistID'
+ *      taskChecklistItemID: // value for 'taskChecklistItemID'
  *      position: // value for 'position'
  *   },
  * });
@@ -3133,8 +3372,8 @@ export type UpdateTaskChecklistItemNameMutationHookResult = ReturnType<typeof us
 export type UpdateTaskChecklistItemNameMutationResult = ApolloReactCommon.MutationResult<UpdateTaskChecklistItemNameMutation>;
 export type UpdateTaskChecklistItemNameMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateTaskChecklistItemNameMutation, UpdateTaskChecklistItemNameMutationVariables>;
 export const UpdateTaskChecklistLocationDocument = gql`
-    mutation updateTaskChecklistLocation($checklistID: UUID!, $position: Float!) {
-  updateTaskChecklistLocation(input: {checklistID: $checklistID, position: $position}) {
+    mutation updateTaskChecklistLocation($taskChecklistID: UUID!, $position: Float!) {
+  updateTaskChecklistLocation(input: {taskChecklistID: $taskChecklistID, position: $position}) {
     checklist {
       id
       position
@@ -3157,7 +3396,7 @@ export type UpdateTaskChecklistLocationMutationFn = ApolloReactCommon.MutationFu
  * @example
  * const [updateTaskChecklistLocationMutation, { data, loading, error }] = useUpdateTaskChecklistLocationMutation({
  *   variables: {
- *      checklistID: // value for 'checklistID'
+ *      taskChecklistID: // value for 'taskChecklistID'
  *      position: // value for 'position'
  *   },
  * });
@@ -3210,6 +3449,118 @@ export function useUpdateTaskChecklistNameMutation(baseOptions?: ApolloReactHook
 export type UpdateTaskChecklistNameMutationHookResult = ReturnType<typeof useUpdateTaskChecklistNameMutation>;
 export type UpdateTaskChecklistNameMutationResult = ApolloReactCommon.MutationResult<UpdateTaskChecklistNameMutation>;
 export type UpdateTaskChecklistNameMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateTaskChecklistNameMutation, UpdateTaskChecklistNameMutationVariables>;
+export const DeleteTaskGroupTasksDocument = gql`
+    mutation deleteTaskGroupTasks($taskGroupID: UUID!) {
+  deleteTaskGroupTasks(input: {taskGroupID: $taskGroupID}) {
+    tasks
+    taskGroupID
+  }
+}
+    `;
+export type DeleteTaskGroupTasksMutationFn = ApolloReactCommon.MutationFunction<DeleteTaskGroupTasksMutation, DeleteTaskGroupTasksMutationVariables>;
+
+/**
+ * __useDeleteTaskGroupTasksMutation__
+ *
+ * To run a mutation, you first call `useDeleteTaskGroupTasksMutation` within a React component and pass it any options that fit your needs.
+ * When your component renders, `useDeleteTaskGroupTasksMutation` returns a tuple that includes:
+ * - A mutate function that you can call at any time to execute the mutation
+ * - An object with fields that represent the current status of the mutation's execution
+ *
+ * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
+ *
+ * @example
+ * const [deleteTaskGroupTasksMutation, { data, loading, error }] = useDeleteTaskGroupTasksMutation({
+ *   variables: {
+ *      taskGroupID: // value for 'taskGroupID'
+ *   },
+ * });
+ */
+export function useDeleteTaskGroupTasksMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<DeleteTaskGroupTasksMutation, DeleteTaskGroupTasksMutationVariables>) {
+        return ApolloReactHooks.useMutation<DeleteTaskGroupTasksMutation, DeleteTaskGroupTasksMutationVariables>(DeleteTaskGroupTasksDocument, baseOptions);
+      }
+export type DeleteTaskGroupTasksMutationHookResult = ReturnType<typeof useDeleteTaskGroupTasksMutation>;
+export type DeleteTaskGroupTasksMutationResult = ApolloReactCommon.MutationResult<DeleteTaskGroupTasksMutation>;
+export type DeleteTaskGroupTasksMutationOptions = ApolloReactCommon.BaseMutationOptions<DeleteTaskGroupTasksMutation, DeleteTaskGroupTasksMutationVariables>;
+export const DuplicateTaskGroupDocument = gql`
+    mutation duplicateTaskGroup($taskGroupID: UUID!, $name: String!, $position: Float!, $projectID: UUID!) {
+  duplicateTaskGroup(input: {projectID: $projectID, taskGroupID: $taskGroupID, name: $name, position: $position}) {
+    taskGroup {
+      id
+      name
+      position
+      tasks {
+        ...TaskFields
+      }
+    }
+  }
+}
+    ${TaskFieldsFragmentDoc}`;
+export type DuplicateTaskGroupMutationFn = ApolloReactCommon.MutationFunction<DuplicateTaskGroupMutation, DuplicateTaskGroupMutationVariables>;
+
+/**
+ * __useDuplicateTaskGroupMutation__
+ *
+ * To run a mutation, you first call `useDuplicateTaskGroupMutation` within a React component and pass it any options that fit your needs.
+ * When your component renders, `useDuplicateTaskGroupMutation` returns a tuple that includes:
+ * - A mutate function that you can call at any time to execute the mutation
+ * - An object with fields that represent the current status of the mutation's execution
+ *
+ * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
+ *
+ * @example
+ * const [duplicateTaskGroupMutation, { data, loading, error }] = useDuplicateTaskGroupMutation({
+ *   variables: {
+ *      taskGroupID: // value for 'taskGroupID'
+ *      name: // value for 'name'
+ *      position: // value for 'position'
+ *      projectID: // value for 'projectID'
+ *   },
+ * });
+ */
+export function useDuplicateTaskGroupMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<DuplicateTaskGroupMutation, DuplicateTaskGroupMutationVariables>) {
+        return ApolloReactHooks.useMutation<DuplicateTaskGroupMutation, DuplicateTaskGroupMutationVariables>(DuplicateTaskGroupDocument, baseOptions);
+      }
+export type DuplicateTaskGroupMutationHookResult = ReturnType<typeof useDuplicateTaskGroupMutation>;
+export type DuplicateTaskGroupMutationResult = ApolloReactCommon.MutationResult<DuplicateTaskGroupMutation>;
+export type DuplicateTaskGroupMutationOptions = ApolloReactCommon.BaseMutationOptions<DuplicateTaskGroupMutation, DuplicateTaskGroupMutationVariables>;
+export const SortTaskGroupDocument = gql`
+    mutation sortTaskGroup($tasks: [TaskPositionUpdate!]!, $taskGroupID: UUID!) {
+  sortTaskGroup(input: {taskGroupID: $taskGroupID, tasks: $tasks}) {
+    taskGroupID
+    tasks {
+      id
+      position
+    }
+  }
+}
+    `;
+export type SortTaskGroupMutationFn = ApolloReactCommon.MutationFunction<SortTaskGroupMutation, SortTaskGroupMutationVariables>;
+
+/**
+ * __useSortTaskGroupMutation__
+ *
+ * To run a mutation, you first call `useSortTaskGroupMutation` within a React component and pass it any options that fit your needs.
+ * When your component renders, `useSortTaskGroupMutation` returns a tuple that includes:
+ * - A mutate function that you can call at any time to execute the mutation
+ * - An object with fields that represent the current status of the mutation's execution
+ *
+ * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
+ *
+ * @example
+ * const [sortTaskGroupMutation, { data, loading, error }] = useSortTaskGroupMutation({
+ *   variables: {
+ *      tasks: // value for 'tasks'
+ *      taskGroupID: // value for 'taskGroupID'
+ *   },
+ * });
+ */
+export function useSortTaskGroupMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<SortTaskGroupMutation, SortTaskGroupMutationVariables>) {
+        return ApolloReactHooks.useMutation<SortTaskGroupMutation, SortTaskGroupMutationVariables>(SortTaskGroupDocument, baseOptions);
+      }
+export type SortTaskGroupMutationHookResult = ReturnType<typeof useSortTaskGroupMutation>;
+export type SortTaskGroupMutationResult = ApolloReactCommon.MutationResult<SortTaskGroupMutation>;
+export type SortTaskGroupMutationOptions = ApolloReactCommon.BaseMutationOptions<SortTaskGroupMutation, SortTaskGroupMutationVariables>;
 export const UpdateTaskGroupNameDocument = gql`
     mutation updateTaskGroupName($taskGroupID: UUID!, $name: String!) {
   updateTaskGroupName(input: {taskGroupID: $taskGroupID, name: $name}) {
@@ -3510,6 +3861,47 @@ export function useGetTeamLazyQuery(baseOptions?: ApolloReactHooks.LazyQueryHook
 export type GetTeamQueryHookResult = ReturnType<typeof useGetTeamQuery>;
 export type GetTeamLazyQueryHookResult = ReturnType<typeof useGetTeamLazyQuery>;
 export type GetTeamQueryResult = ApolloReactCommon.QueryResult<GetTeamQuery, GetTeamQueryVariables>;
+export const UpdateTeamMemberRoleDocument = gql`
+    mutation updateTeamMemberRole($teamID: UUID!, $userID: UUID!, $roleCode: RoleCode!) {
+  updateTeamMemberRole(input: {teamID: $teamID, userID: $userID, roleCode: $roleCode}) {
+    member {
+      id
+      role {
+        code
+        name
+      }
+    }
+    teamID
+  }
+}
+    `;
+export type UpdateTeamMemberRoleMutationFn = ApolloReactCommon.MutationFunction<UpdateTeamMemberRoleMutation, UpdateTeamMemberRoleMutationVariables>;
+
+/**
+ * __useUpdateTeamMemberRoleMutation__
+ *
+ * To run a mutation, you first call `useUpdateTeamMemberRoleMutation` within a React component and pass it any options that fit your needs.
+ * When your component renders, `useUpdateTeamMemberRoleMutation` returns a tuple that includes:
+ * - A mutate function that you can call at any time to execute the mutation
+ * - An object with fields that represent the current status of the mutation's execution
+ *
+ * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
+ *
+ * @example
+ * const [updateTeamMemberRoleMutation, { data, loading, error }] = useUpdateTeamMemberRoleMutation({
+ *   variables: {
+ *      teamID: // value for 'teamID'
+ *      userID: // value for 'userID'
+ *      roleCode: // value for 'roleCode'
+ *   },
+ * });
+ */
+export function useUpdateTeamMemberRoleMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<UpdateTeamMemberRoleMutation, UpdateTeamMemberRoleMutationVariables>) {
+        return ApolloReactHooks.useMutation<UpdateTeamMemberRoleMutation, UpdateTeamMemberRoleMutationVariables>(UpdateTeamMemberRoleDocument, baseOptions);
+      }
+export type UpdateTeamMemberRoleMutationHookResult = ReturnType<typeof useUpdateTeamMemberRoleMutation>;
+export type UpdateTeamMemberRoleMutationResult = ApolloReactCommon.MutationResult<UpdateTeamMemberRoleMutation>;
+export type UpdateTeamMemberRoleMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateTeamMemberRoleMutation, UpdateTeamMemberRoleMutationVariables>;
 export const ToggleTaskLabelDocument = gql`
     mutation toggleTaskLabel($taskID: UUID!, $projectLabelID: UUID!) {
   toggleTaskLabel(input: {taskID: $taskID, projectLabelID: $projectLabelID}) {
@@ -3561,6 +3953,70 @@ export function useToggleTaskLabelMutation(baseOptions?: ApolloReactHooks.Mutati
 export type ToggleTaskLabelMutationHookResult = ReturnType<typeof useToggleTaskLabelMutation>;
 export type ToggleTaskLabelMutationResult = ApolloReactCommon.MutationResult<ToggleTaskLabelMutation>;
 export type ToggleTaskLabelMutationOptions = ApolloReactCommon.BaseMutationOptions<ToggleTaskLabelMutation, ToggleTaskLabelMutationVariables>;
+export const TopNavbarDocument = gql`
+    query topNavbar {
+  notifications {
+    createdAt
+    read
+    id
+    entity {
+      id
+      type
+      name
+    }
+    actor {
+      id
+      type
+      name
+    }
+    actionType
+  }
+  me {
+    user {
+      id
+      fullName
+      profileIcon {
+        initials
+        bgColor
+        url
+      }
+    }
+    teamRoles {
+      teamID
+      roleCode
+    }
+    projectRoles {
+      projectID
+      roleCode
+    }
+  }
+}
+    `;
+
+/**
+ * __useTopNavbarQuery__
+ *
+ * To run a query within a React component, call `useTopNavbarQuery` and pass it any options that fit your needs.
+ * When your component renders, `useTopNavbarQuery` returns an object from Apollo Client that contains loading, error, and data properties
+ * you can use to render your UI.
+ *
+ * @param baseOptions options that will be passed into the query, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options;
+ *
+ * @example
+ * const { data, loading, error } = useTopNavbarQuery({
+ *   variables: {
+ *   },
+ * });
+ */
+export function useTopNavbarQuery(baseOptions?: ApolloReactHooks.QueryHookOptions<TopNavbarQuery, TopNavbarQueryVariables>) {
+        return ApolloReactHooks.useQuery<TopNavbarQuery, TopNavbarQueryVariables>(TopNavbarDocument, baseOptions);
+      }
+export function useTopNavbarLazyQuery(baseOptions?: ApolloReactHooks.LazyQueryHookOptions<TopNavbarQuery, TopNavbarQueryVariables>) {
+          return ApolloReactHooks.useLazyQuery<TopNavbarQuery, TopNavbarQueryVariables>(TopNavbarDocument, baseOptions);
+        }
+export type TopNavbarQueryHookResult = ReturnType<typeof useTopNavbarQuery>;
+export type TopNavbarLazyQueryHookResult = ReturnType<typeof useTopNavbarLazyQuery>;
+export type TopNavbarQueryResult = ApolloReactCommon.QueryResult<TopNavbarQuery, TopNavbarQueryVariables>;
 export const UnassignTaskDocument = gql`
     mutation unassignTask($taskID: UUID!, $userID: UUID!) {
   unassignTask(input: {taskID: $taskID, userID: $userID}) {
@@ -3820,7 +4276,7 @@ export type UpdateTaskLocationMutationHookResult = ReturnType<typeof useUpdateTa
 export type UpdateTaskLocationMutationResult = ApolloReactCommon.MutationResult<UpdateTaskLocationMutation>;
 export type UpdateTaskLocationMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateTaskLocationMutation, UpdateTaskLocationMutationVariables>;
 export const UpdateTaskNameDocument = gql`
-    mutation updateTaskName($taskID: String!, $name: String!) {
+    mutation updateTaskName($taskID: UUID!, $name: String!) {
   updateTaskName(input: {taskID: $taskID, name: $name}) {
     id
     name
@@ -3862,6 +4318,7 @@ export const CreateUserAccountDocument = gql`
     fullName
     initials
     username
+    bio
     profileIcon {
       url
       initials
@@ -3960,6 +4417,82 @@ export function useDeleteUserAccountMutation(baseOptions?: ApolloReactHooks.Muta
 export type DeleteUserAccountMutationHookResult = ReturnType<typeof useDeleteUserAccountMutation>;
 export type DeleteUserAccountMutationResult = ApolloReactCommon.MutationResult<DeleteUserAccountMutation>;
 export type DeleteUserAccountMutationOptions = ApolloReactCommon.BaseMutationOptions<DeleteUserAccountMutation, DeleteUserAccountMutationVariables>;
+export const UpdateUserInfoDocument = gql`
+    mutation updateUserInfo($name: String!, $initials: String!, $email: String!, $bio: String!) {
+  updateUserInfo(input: {name: $name, initials: $initials, email: $email, bio: $bio}) {
+    user {
+      id
+      email
+      fullName
+      bio
+      profileIcon {
+        initials
+      }
+    }
+  }
+}
+    `;
+export type UpdateUserInfoMutationFn = ApolloReactCommon.MutationFunction<UpdateUserInfoMutation, UpdateUserInfoMutationVariables>;
+
+/**
+ * __useUpdateUserInfoMutation__
+ *
+ * To run a mutation, you first call `useUpdateUserInfoMutation` within a React component and pass it any options that fit your needs.
+ * When your component renders, `useUpdateUserInfoMutation` returns a tuple that includes:
+ * - A mutate function that you can call at any time to execute the mutation
+ * - An object with fields that represent the current status of the mutation's execution
+ *
+ * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
+ *
+ * @example
+ * const [updateUserInfoMutation, { data, loading, error }] = useUpdateUserInfoMutation({
+ *   variables: {
+ *      name: // value for 'name'
+ *      initials: // value for 'initials'
+ *      email: // value for 'email'
+ *      bio: // value for 'bio'
+ *   },
+ * });
+ */
+export function useUpdateUserInfoMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<UpdateUserInfoMutation, UpdateUserInfoMutationVariables>) {
+        return ApolloReactHooks.useMutation<UpdateUserInfoMutation, UpdateUserInfoMutationVariables>(UpdateUserInfoDocument, baseOptions);
+      }
+export type UpdateUserInfoMutationHookResult = ReturnType<typeof useUpdateUserInfoMutation>;
+export type UpdateUserInfoMutationResult = ApolloReactCommon.MutationResult<UpdateUserInfoMutation>;
+export type UpdateUserInfoMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateUserInfoMutation, UpdateUserInfoMutationVariables>;
+export const UpdateUserPasswordDocument = gql`
+    mutation updateUserPassword($userID: UUID!, $password: String!) {
+  updateUserPassword(input: {userID: $userID, password: $password}) {
+    ok
+  }
+}
+    `;
+export type UpdateUserPasswordMutationFn = ApolloReactCommon.MutationFunction<UpdateUserPasswordMutation, UpdateUserPasswordMutationVariables>;
+
+/**
+ * __useUpdateUserPasswordMutation__
+ *
+ * To run a mutation, you first call `useUpdateUserPasswordMutation` within a React component and pass it any options that fit your needs.
+ * When your component renders, `useUpdateUserPasswordMutation` returns a tuple that includes:
+ * - A mutate function that you can call at any time to execute the mutation
+ * - An object with fields that represent the current status of the mutation's execution
+ *
+ * @param baseOptions options that will be passed into the mutation, supported options are listed on: https://www.apollographql.com/docs/react/api/react-hooks/#options-2;
+ *
+ * @example
+ * const [updateUserPasswordMutation, { data, loading, error }] = useUpdateUserPasswordMutation({
+ *   variables: {
+ *      userID: // value for 'userID'
+ *      password: // value for 'password'
+ *   },
+ * });
+ */
+export function useUpdateUserPasswordMutation(baseOptions?: ApolloReactHooks.MutationHookOptions<UpdateUserPasswordMutation, UpdateUserPasswordMutationVariables>) {
+        return ApolloReactHooks.useMutation<UpdateUserPasswordMutation, UpdateUserPasswordMutationVariables>(UpdateUserPasswordDocument, baseOptions);
+      }
+export type UpdateUserPasswordMutationHookResult = ReturnType<typeof useUpdateUserPasswordMutation>;
+export type UpdateUserPasswordMutationResult = ApolloReactCommon.MutationResult<UpdateUserPasswordMutation>;
+export type UpdateUserPasswordMutationOptions = ApolloReactCommon.BaseMutationOptions<UpdateUserPasswordMutation, UpdateUserPasswordMutationVariables>;
 export const UpdateUserRoleDocument = gql`
     mutation updateUserRole($userID: UUID!, $roleCode: RoleCode!) {
   updateUserRole(input: {userID: $userID, roleCode: $roleCode}) {

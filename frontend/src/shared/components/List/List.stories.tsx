@@ -3,6 +3,7 @@ import { action } from '@storybook/addon-actions';
 import Card from 'shared/components/Card';
 import CardComposer from 'shared/components/CardComposer';
 import LabelColors from 'shared/constants/labelColors';
+import NOOP from 'shared/utils/noop';
 import List, { ListCards } from '.';
 
 export default {
@@ -60,15 +61,7 @@ export const Default = () => {
       onExtraMenuOpen={action('extra menu open')}
     >
       <ListCards>
-        <CardComposer
-          onClose={() => {
-            console.log('close!');
-          }}
-          onCreateCard={name => {
-            console.log(name);
-          }}
-          isOpen={false}
-        />
+        <CardComposer onClose={NOOP} onCreateCard={NOOP} isOpen={false} />
       </ListCards>
     </List>
   );
@@ -85,15 +78,7 @@ export const WithCardComposer = () => {
       onExtraMenuOpen={action('extra menu open')}
     >
       <ListCards>
-        <CardComposer
-          onClose={() => {
-            console.log('close!');
-          }}
-          onCreateCard={name => {
-            console.log(name);
-          }}
-          isOpen
-        />
+        <CardComposer onClose={NOOP} onCreateCard={NOOP} isOpen />
       </ListCards>
     </List>
   );
@@ -124,15 +109,7 @@ export const WithCard = () => {
           checklists={{ complete: 1, total: 4 }}
           dueDate={{ isPastDue: false, formattedDate: 'Oct 26, 2020' }}
         />
-        <CardComposer
-          onClose={() => {
-            console.log('close!');
-          }}
-          onCreateCard={name => {
-            console.log(name);
-          }}
-          isOpen={false}
-        />
+        <CardComposer onClose={NOOP} onCreateCard={NOOP} isOpen={false} />
       </ListCards>
     </List>
   );
@@ -162,15 +139,7 @@ export const WithCardAndComposer = () => {
           checklists={{ complete: 1, total: 4 }}
           dueDate={{ isPastDue: false, formattedDate: 'Oct 26, 2020' }}
         />
-        <CardComposer
-          onClose={() => {
-            console.log('close!');
-          }}
-          onCreateCard={name => {
-            console.log(name);
-          }}
-          isOpen
-        />
+        <CardComposer onClose={NOOP} onCreateCard={NOOP} isOpen />
       </ListCards>
     </List>
   );

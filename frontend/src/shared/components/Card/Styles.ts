@@ -1,11 +1,26 @@
 import styled, { css, keyframes } from 'styled-components';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { mixin } from 'shared/utils/styles';
 import TextareaAutosize from 'react-autosize-textarea';
-import { CheckCircle } from 'shared/icons';
-import { RefObject } from 'react';
+import { CheckCircle, CheckSquareOutline, Clock } from 'shared/icons';
+import TaskAssignee from 'shared/components/TaskAssignee';
 
-export const ClockIcon = styled(FontAwesomeIcon)``;
+export const CardMember = styled(TaskAssignee)<{ zIndex: number }>`
+  box-shadow: 0 0 0 2px rgba(${props => props.theme.colors.bg.secondary}),
+    inset 0 0 0 1px rgba(${props => props.theme.colors.bg.secondary}, 0.07);
+  z-index: ${props => props.zIndex};
+  position: relative;
+`;
+export const ChecklistIcon = styled(CheckSquareOutline)<{ color: 'success' | 'normal' }>`
+  ${props =>
+    props.color === 'success' &&
+    css`
+      fill: rgba(${props.theme.colors.success});
+      stroke: rgba(${props.theme.colors.success});
+    `}
+`;
+export const ClockIcon = styled(Clock)<{ color: string }>`
+  fill: ${props => props.color};
+`;
 
 export const EditorTextarea = styled(TextareaAutosize)`
   overflow: hidden;
@@ -69,11 +84,12 @@ export const DueDateCardBadge = styled(ListCardBadge)<{ isPastDue: boolean }>`
     `}
 `;
 
-export const ListCardBadgeText = styled.span`
+export const ListCardBadgeText = styled.span<{ color?: 'success' | 'normal' }>`
   font-size: 12px;
   padding: 0 4px 0 6px;
   vertical-align: top;
   white-space: nowrap;
+  ${props => props.color === 'success' && `color: rgba(${props.theme.colors.success});`}
 `;
 
 export const ListCardContainer = styled.div<{ isActive: boolean; editable: boolean }>`
@@ -131,6 +147,11 @@ export const ListCardLabelText = styled.span`
   line-height: 16px;
 `;
 
+export const ListCardLabelsWrapper = styled.div`
+  overflow: auto;
+  position: relative;
+`;
+
 export const ListCardLabel = styled.span<{ variant: 'small' | 'large' }>`
   ${props =>
     props.variant === 'small'
@@ -162,8 +183,6 @@ export const ListCardLabel = styled.span<{ variant: 'small' | 'large' }>`
 `;
 
 export const ListCardLabels = styled.div<{ toggleLabels: boolean; toggleDirection: 'expand' | 'shrink' }>`
-  overflow: auto;
-  position: relative;
   &:hover {
     opacity: 0.8;
   }
@@ -223,6 +242,7 @@ export const CardTitle = styled.span`
 export const CardMembers = styled.div`
   float: right;
   margin: 0 -2px 4px 0;
+  display: flex;
 `;
 
 export const CompleteIcon = styled(CheckCircle)`

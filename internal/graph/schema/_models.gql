@@ -78,6 +78,7 @@ type UserAccount {
   createdAt: Time!
   fullName: String!
   initials: String!
+  bio: String!
   role: Role!
   username: String!
   profileIcon: ProfileIcon!
@@ -96,8 +97,7 @@ type Project {
   id: ID!
   createdAt: Time!
   name: String!
-  team: Team!
-  owner: Member!
+  team: Team
   taskGroups: [TaskGroup!]!
   members: [Member!]!
   labels: [ProjectLabel!]!
@@ -130,6 +130,7 @@ type Task {
   description: String
   dueDate: Time
   complete: Boolean!
+  completedAt: Time
   assigned: [Member!]!
   labels: [TaskLabel!]!
   checklists: [TaskChecklist!]!

@@ -1,18 +1,13 @@
 import React, { useState, useRef } from 'react';
-import { UserPlus, Checkmark } from 'shared/icons';
 import styled, { css } from 'styled-components';
 import TaskAssignee from 'shared/components/TaskAssignee';
 import Select from 'shared/components/Select';
-import { User, Plus, Lock, Pencil, Trash } from 'shared/icons';
+import { User, UserPlus, Checkmark } from 'shared/icons';
 import { usePopup, Popup } from 'shared/components/PopupMenu';
 import { RoleCode, useUpdateUserRoleMutation } from 'shared/generated/graphql';
-import { AgGridReact } from 'ag-grid-react';
 import Input from 'shared/components/Input';
-import Member from 'shared/components/Member';
-
-import 'ag-grid-community/dist/styles/ag-grid.css';
-import 'ag-grid-community/dist/styles/ag-theme-material.css';
 import Button from 'shared/components/Button';
+import NOOP from 'shared/utils/noop';
 
 export const RoleCheckmark = styled(Checkmark)`
   padding-left: 4px;
@@ -72,6 +67,7 @@ export const MiniProfileActionItem = styled.span<{ disabled?: boolean }>`
           }
         `}
 `;
+
 export const Content = styled.div`
   padding: 0 12px 12px;
 `;
@@ -103,6 +99,7 @@ export const RemoveMemberButton = styled(Button)`
   padding: 6px 12px;
   width: 100%;
 `;
+
 type TeamRoleManagerPopupProps = {
   user: User;
   users: Array<User>;
@@ -123,7 +120,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
   onChangeRole,
 }) => {
   const { hidePopup, setTab } = usePopup();
-  const [userPass, setUserPass] = useState({ pass: '', passConfirm: '' });
+  const [userPass] = useState({ pass: '', passConfirm: '' });
   const [deleteUser, setDeleteUser] = useState<{ label: string; value: string } | null>(null);
   const hasOwned = user.owned.projects.length !== 0 || user.owned.teams.length !== 0;
   return (
@@ -142,6 +139,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
               </MiniProfileActionItem>
             )}
             <MiniProfileActionItem
+              disabled
               onClick={() => {
                 setTab(3);
               }}
@@ -197,7 +195,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
           {user.role && user.role.code === 'owner' && (
             <>
               <Separator />
-              <WarningText>You can't change roles because there must be an owner.</WarningText>
+              <WarningText>You can not change roles because there must be an owner.</WarningText>
             </>
           )}
         </MiniProfileActions>
@@ -211,7 +209,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
             <>
               <DeleteDescription>{`The user is the owner of ${user.owned.projects.length} projects & ${user.owned.teams.length} teams.`}</DeleteDescription>
               <DeleteDescription>
-                Choose a new user to take over ownership of this user's teams & projects.
+                Choose a new user to take over ownership of the users teams & projects.
               </DeleteDescription>
               <UserSelect
                 onChange={v => setDeleteUser(v)}
@@ -224,7 +222,6 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
             disabled={!(!hasOwned || (hasOwned && deleteUser))}
             onClick={() => {
               if (onDeleteUser) {
-                console.log(`${!hasOwned} || (${hasOwned} && ${deleteUser})`);
                 if (!hasOwned || (hasOwned && deleteUser)) {
                   onDeleteUser(user.id, deleteUser ? deleteUser.value : null);
                 }
@@ -242,7 +239,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
             Removing this user from the organzation will remove them from assigned tasks, projects, and teams.
           </DeleteDescription>
           <DeleteDescription>{`The user is the owner of ${user.owned.projects.length} projects & ${user.owned.teams.length} teams.`}</DeleteDescription>
-          <UserSelect onChange={() => {}} value={null} options={users.map(u => ({ label: u.fullName, value: u.id }))} />
+          <UserSelect onChange={NOOP} value={null} options={users.map(u => ({ label: u.fullName, value: u.id }))} />
           <UserPassConfirmButton
             onClick={() => {
               // onDeleteUser();
@@ -256,7 +253,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
       <Popup title="Reset password?" onClose={() => hidePopup()} tab={3}>
         <Content>
           <DeleteDescription>
-            You can either set the user's new password directly or send the user an email allowing them to reset their
+            You can either set the users new password directly or send the user an email allowing them to reset their
             own password.
           </DeleteDescription>
           <UserPassBar>
@@ -294,6 +291,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
     </>
   );
 };
+
 const UserSelect = styled(Select)`
   margin: 8px 0;
   padding: 8px 0;
@@ -302,6 +300,7 @@ const UserSelect = styled(Select)`
 const NewUserPassInput = styled(Input)`
   margin: 8px 0;
 `;
+
 const InviteMemberButton = styled(Button)`
   padding: 7px 12px;
 `;
@@ -310,6 +309,7 @@ const UserPassBar = styled.div`
   display: flex;
   padding-top: 8px;
 `;
+
 const UserPassConfirmButton = styled(Button)`
   width: 100%;
   padding: 7px 12px;
@@ -400,163 +400,6 @@ const MemberListWrapper = styled.div`
   flex: 1 1;
 `;
 
-const Root = styled.div`
-  .ag-theme-material {
-    --ag-foreground-color: #c2c6dc;
-    --ag-secondary-foreground-color: #c2c6dc;
-    --ag-background-color: transparent;
-    --ag-header-background-color: transparent;
-    --ag-header-foreground-color: #c2c6dc;
-    --ag-border-color: #414561;
-
-    --ag-row-hover-color: #262c49;
-    --ag-header-cell-hover-background-color: #262c49;
-    --ag-checkbox-unchecked-color: #c2c6dc;
-    --ag-checkbox-indeterminate-color: rgba(115, 103, 240);
-    --ag-selected-row-background-color: #262c49;
-    --ag-material-primary-color: rgba(115, 103, 240);
-    --ag-material-accent-color: rgba(115, 103, 240);
-  }
-  .ag-theme-material ::-webkit-scrollbar {
-    width: 12px;
-  }
-
-  .ag-theme-material ::-webkit-scrollbar-track {
-    background: #262c49;
-    border-radius: 20px;
-  }
-
-  .ag-theme-material ::-webkit-scrollbar-thumb {
-    background: #7367f0;
-    border-radius: 20px;
-  }
-  .ag-header-cell-text {
-    color: #fff;
-    font-weight: 700;
-  }
-`;
-
-const Header = styled.div`
-  border-bottom: 1px solid #e2e2e2;
-  flex-direction: row;
-  box-sizing: border-box;
-  display: flex;
-  white-space: nowrap;
-  width: 100%;
-  overflow: hidden;
-  background: transparent;
-  border-bottom-color: #414561;
-  color: #fff;
-
-  height: 112px;
-  min-height: 112px;
-`;
-
-const EditUserIcon = styled(Pencil)``;
-
-const LockUserIcon = styled(Lock)``;
-
-const DeleteUserIcon = styled(Trash)``;
-
-type ActionButtonProps = {
-  onClick: ($target: React.RefObject<HTMLElement>) => void;
-};
-
-const ActionButtonWrapper = styled.div`
-  margin-right: 8px;
-  cursor: pointer;
-  display: inline-flex;
-`;
-
-const ActionButton: React.FC<ActionButtonProps> = ({ onClick, children }) => {
-  const $wrapper = useRef<HTMLDivElement>(null);
-  return (
-    <ActionButtonWrapper onClick={() => onClick($wrapper)} ref={$wrapper}>
-      {children}
-    </ActionButtonWrapper>
-  );
-};
-
-const ActionButtons = (params: any) => {
-  return (
-    <>
-      <ActionButton onClick={() => {}}>
-        <EditUserIcon width={16} height={16} />
-      </ActionButton>
-      <ActionButton onClick={$target => params.onDeleteUser($target, params.value)}>
-        <DeleteUserIcon width={16} height={16} />
-      </ActionButton>
-    </>
-  );
-};
-
-type ListTableProps = {
-  users: Array<User>;
-  onDeleteUser: ($target: React.RefObject<HTMLElement>, userID: string) => void;
-};
-
-const ListTable: React.FC<ListTableProps> = ({ users, onDeleteUser }) => {
-  const data = {
-    defaultColDef: {
-      resizable: true,
-      sortable: true,
-    },
-    columnDefs: [
-      {
-        minWidth: 55,
-        width: 55,
-        headerCheckboxSelection: true,
-        checkboxSelection: true,
-      },
-      { minWidth: 210, headerName: 'Username', editable: true, field: 'username' },
-      { minWidth: 225, headerName: 'Email', field: 'email' },
-      { minWidth: 200, headerName: 'Name', editable: true, field: 'fullName' },
-      { minWidth: 200, headerName: 'Role', editable: true, field: 'roleName' },
-      {
-        minWidth: 200,
-        headerName: 'Actions',
-        field: 'id',
-        cellRenderer: 'actionButtons',
-        cellRendererParams: {
-          onDeleteUser: (target: any, userID: any) => {
-            onDeleteUser(target, userID);
-          },
-        },
-      },
-    ],
-    frameworkComponents: {
-      actionButtons: ActionButtons,
-    },
-  };
-  return (
-    <Root>
-      <div className="ag-theme-material" style={{ height: '296px', width: '100%' }}>
-        <AgGridReact
-          rowSelection="multiple"
-          defaultColDef={data.defaultColDef}
-          columnDefs={data.columnDefs}
-          rowData={users.map(u => ({ ...u, roleName: 'member' }))}
-          frameworkComponents={data.frameworkComponents}
-          onFirstDataRendered={params => {
-            params.api.sizeColumnsToFit();
-          }}
-          onGridSizeChanged={params => {
-            params.api.sizeColumnsToFit();
-          }}
-        />
-      </div>
-    </Root>
-  );
-};
-
-const Wrapper = styled.div`
-  background: #eff2f7;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex-wrap: wrap;
-`;
-
 const Container = styled.div`
   padding: 2.2rem;
   display: flex;
@@ -587,6 +430,7 @@ const TabNavItem = styled.li`
   display: block;
   position: relative;
 `;
+
 const TabNavItemButton = styled.button<{ active: boolean }>`
   cursor: pointer;
   display: flex;
@@ -606,6 +450,10 @@ const TabNavItemButton = styled.button<{ active: boolean }>`
   &:hover svg {
     fill: rgba(115, 103, 240);
   }
+`;
+const TabItemUser = styled(User)<{ active: boolean }>`
+fill: ${props => (props.active ? 'rgba(115, 103, 240)' : '#c2c6dc')}
+stroke: ${props => (props.active ? 'rgba(115, 103, 240)' : '#c2c6dc')}
 `;
 
 const TabNavItemSpan = styled.span`
@@ -647,7 +495,7 @@ const TabContent = styled.div`
   border-radius: 0.5rem;
 `;
 
-const items = [{ name: 'Members' }, { name: 'Settings' }];
+const items = [{ name: 'Members' }];
 
 type NavItemProps = {
   active: boolean;
@@ -669,7 +517,7 @@ const NavItem: React.FC<NavItemProps> = ({ active, name, tab, onClick }) => {
       }}
     >
       <TabNavItemButton active={active}>
-        <User size={14} color={active ? 'rgba(115, 103, 240)' : '#c2c6dc'} />
+        <TabItemUser width={14} height={14} active={active} />
         <TabNavItemSpan>{name}</TabNavItemSpan>
       </TabNavItemButton>
     </TabNavItem>
@@ -682,6 +530,7 @@ type AdminProps = {
   onDeleteUser: (userID: string, newOwnerID: string | null) => void;
   onInviteUser: ($target: React.RefObject<HTMLElement>) => void;
   users: Array<User>;
+  canInviteUser: boolean;
   onUpdateUserPassword: (user: TaskUser, password: string) => void;
 };
 
@@ -689,6 +538,7 @@ const Admin: React.FC<AdminProps> = ({
   initialTab,
   onAddUser,
   onUpdateUserPassword,
+  canInviteUser,
   onDeleteUser,
   onInviteUser,
   users,
@@ -697,7 +547,7 @@ const Admin: React.FC<AdminProps> = ({
     'You can’t leave because you are the only admin. To make another user an admin, click their avatar, select “Change permissions…”, and select “Admin”.';
   const [currentTop, setTop] = useState(initialTab * 48);
   const [currentTab, setTab] = useState(initialTab);
-  const { showPopup, hidePopup } = usePopup();
+  const { showPopup } = usePopup();
   const $tabNav = useRef<HTMLDivElement>(null);
 
   const [updateUserRole] = useUpdateUserRoleMutation();
@@ -707,6 +557,7 @@ const Admin: React.FC<AdminProps> = ({
         <TabNavContent>
           {items.map((item, idx) => (
             <NavItem
+              key={item.name}
               onClick={(tab, top) => {
                 if ($tabNav && $tabNav.current) {
                   const pos = $tabNav.current.getBoundingClientRect();
@@ -733,14 +584,16 @@ const Admin: React.FC<AdminProps> = ({
               </ListDesc>
               <ListActions>
                 <FilterSearch width="250px" variant="alternate" placeholder="Filter by name" />
-                <InviteMemberButton
-                  onClick={$target => {
-                    onAddUser($target);
-                  }}
-                >
-                  <InviteIcon width={16} height={16} />
-                  New Member
-                </InviteMemberButton>
+                {canInviteUser && (
+                  <InviteMemberButton
+                    onClick={$target => {
+                      onAddUser($target);
+                    }}
+                  >
+                    <InviteIcon width={16} height={16} />
+                    New Member
+                  </InviteMemberButton>
+                )}
               </ListActions>
             </MemberListHeader>
             <MemberList>
@@ -748,7 +601,7 @@ const Admin: React.FC<AdminProps> = ({
                 const projectTotal = member.owned.projects.length + member.member.projects.length;
                 return (
                   <MemberListItem>
-                    <MemberProfile showRoleIcons size={32} onMemberProfile={() => {}} member={member} />
+                    <MemberProfile showRoleIcons size={32} onMemberProfile={NOOP} member={member} />
                     <MemberListItemDetails>
                       <MemberItemName>{member.fullName}</MemberItemName>
                       <MemberItemUsername>{`@${member.username}`}</MemberItemUsername>

@@ -10,9 +10,132 @@ import {
   getNewDraggablePosition,
   getAfterDropDraggableList,
 } from 'shared/utils/draggables';
-import moment from 'moment';
+import dayjs from 'dayjs';
+import { TaskSorting, TaskSortingType, TaskSortingDirection, sortTasks } from 'shared/utils/sorting';
 
 import { Container, BoardContainer, BoardWrapper } from './Styles';
+import shouldMetaFilter from './metaFilter';
+
+export enum TaskMeta {
+  NONE,
+  TITLE,
+  MEMBER,
+  LABEL,
+  DUE_DATE,
+}
+
+export enum TaskMetaMatch {
+  MATCH_ANY,
+  MATCH_ALL,
+}
+
+export enum TaskStatus {
+  ALL,
+  COMPLETE,
+  INCOMPLETE,
+}
+
+export enum TaskSince {
+  ALL,
+  TODAY,
+  YESTERDAY,
+  ONE_WEEK,
+  TWO_WEEKS,
+  THREE_WEEKS,
+}
+
+export type TaskStatusFilter = {
+  status: TaskStatus;
+  since: TaskSince;
+};
+
+export interface TaskMetaFilterName {
+  meta: TaskMeta;
+  value?: string | dayjs.Dayjs | null;
+  id?: string | null;
+}
+
+export type TaskNameMetaFilter = {
+  name: string;
+};
+
+export enum DueDateFilterType {
+  TODAY,
+  TOMORROW,
+  THIS_WEEK,
+  NEXT_WEEK,
+  ONE_WEEK,
+  TWO_WEEKS,
+  THREE_WEEKS,
+  OVERDUE,
+  NO_DUE_DATE,
+}
+
+export type DueDateMetaFilter = {
+  type: DueDateFilterType;
+  label: string;
+};
+
+export type MemberMetaFilter = {
+  id: string;
+  username: string;
+};
+
+export type LabelMetaFilter = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+export type TaskMetaFilters = {
+  match: TaskMetaMatch;
+  dueDate: DueDateMetaFilter | null;
+  taskName: TaskNameMetaFilter | null;
+  members: Array<MemberMetaFilter>;
+  labels: Array<LabelMetaFilter>;
+};
+
+function shouldStatusFilter(task: Task, filter: TaskStatusFilter) {
+  if (filter.status === TaskStatus.ALL) {
+    return true;
+  }
+
+  if (filter.status === TaskStatus.INCOMPLETE && task.complete === false) {
+    return true;
+  }
+  if (filter.status === TaskStatus.COMPLETE && task.completedAt && task.complete === true) {
+    const completedAt = dayjs(task.completedAt);
+    const REFERENCE = dayjs();
+    switch (filter.since) {
+      case TaskSince.TODAY:
+        const TODAY = REFERENCE.clone().startOf('day');
+        return completedAt.isSame(TODAY, 'd');
+      case TaskSince.YESTERDAY:
+        const YESTERDAY = REFERENCE.clone()
+          .subtract(1, 'day')
+          .startOf('day');
+        return completedAt.isSameOrAfter(YESTERDAY, 'd');
+      case TaskSince.ONE_WEEK:
+        const ONE_WEEK = REFERENCE.clone()
+          .subtract(7, 'day')
+          .startOf('day');
+        return completedAt.isSameOrAfter(ONE_WEEK, 'd');
+      case TaskSince.TWO_WEEKS:
+        const TWO_WEEKS = REFERENCE.clone()
+          .subtract(14, 'day')
+          .startOf('day');
+        return completedAt.isSameOrAfter(TWO_WEEKS, 'd');
+      case TaskSince.THREE_WEEKS:
+        const THREE_WEEKS = REFERENCE.clone()
+          .subtract(21, 'day')
+          .startOf('day');
+        return completedAt.isSameOrAfter(THREE_WEEKS, 'd');
+      default:
+        return true;
+    }
+  }
+  return false;
+}
 
 interface SimpleProps {
   taskGroups: Array<TaskGroup>;
@@ -28,7 +151,28 @@ interface SimpleProps {
   onCardMemberClick: OnCardMemberClick;
   onCardLabelClick: () => void;
   cardLabelVariant: CardLabelVariant;
+  taskStatusFilter?: TaskStatusFilter;
+  taskMetaFilters?: TaskMetaFilters;
+  taskSorting?: TaskSorting;
 }
+
+const initTaskStatusFilter: TaskStatusFilter = {
+  status: TaskStatus.ALL,
+  since: TaskSince.ALL,
+};
+
+const initTaskMetaFilters: TaskMetaFilters = {
+  match: TaskMetaMatch.MATCH_ANY,
+  dueDate: null,
+  taskName: null,
+  labels: [],
+  members: [],
+};
+
+const initTaskSorting: TaskSorting = {
+  type: TaskSortingType.NONE,
+  direction: TaskSortingDirection.ASC,
+};
 
 const SimpleLists: React.FC<SimpleProps> = ({
   taskGroups,
@@ -43,6 +187,9 @@ const SimpleLists: React.FC<SimpleProps> = ({
   cardLabelVariant,
   onExtraMenuOpen,
   onCardMemberClick,
+  taskStatusFilter = initTaskStatusFilter,
+  taskMetaFilters = initTaskMetaFilters,
+  taskSorting = initTaskSorting,
 }) => {
   const onDragEnd = ({ draggableId, source, destination, type }: DropResult) => {
     if (typeof destination === 'undefined') return;
@@ -81,13 +228,17 @@ const SimpleLists: React.FC<SimpleProps> = ({
           position: newPosition,
         });
       } else {
-        throw { error: 'task group can not be found' };
+        throw new Error('task group can not be found');
       }
     } else {
-      const targetGroup = taskGroups.findIndex(
+      const curTaskGroup = taskGroups.findIndex(
         taskGroup => taskGroup.tasks.findIndex(task => task.id === draggableId) !== -1,
       );
-      const droppedTask = taskGroups[targetGroup].tasks.find(task => task.id === draggableId);
+      let targetTaskGroup = curTaskGroup;
+      if (!isSameList) {
+        targetTaskGroup = taskGroups.findIndex(taskGroup => taskGroup.id === destination.droppableId);
+      }
+      const droppedTask = taskGroups[curTaskGroup].tasks.find(task => task.id === draggableId);
 
       if (droppedTask) {
         droppedDraggable = {
@@ -95,7 +246,7 @@ const SimpleLists: React.FC<SimpleProps> = ({
           position: droppedTask.position,
         };
         beforeDropDraggables = getSortedDraggables(
-          taskGroups[targetGroup].tasks.map(task => {
+          taskGroups[targetTaskGroup].tasks.map(task => {
             return { id: task.id, position: task.position };
           }),
         );
@@ -160,10 +311,18 @@ const SimpleLists: React.FC<SimpleProps> = ({
                                 <ListCards ref={columnDropProvided.innerRef} {...columnDropProvided.droppableProps}>
                                   {taskGroup.tasks
                                     .slice()
+                                    .filter(t => shouldStatusFilter(t, taskStatusFilter))
+                                    .filter(t => shouldMetaFilter(t, taskMetaFilters))
                                     .sort((a: any, b: any) => a.position - b.position)
+                                    .sort((a: any, b: any) => sortTasks(a, b, taskSorting))
                                     .map((task: Task, taskIndex: any) => {
                                       return (
-                                        <Draggable key={task.id} draggableId={task.id} index={taskIndex}>
+                                        <Draggable
+                                          key={task.id}
+                                          draggableId={task.id}
+                                          index={taskIndex}
+                                          isDragDisabled={taskSorting.type !== TaskSortingType.NONE}
+                                        >
                                           {taskProvided => {
                                             return (
                                               <Card
@@ -194,7 +353,7 @@ const SimpleLists: React.FC<SimpleProps> = ({
                                                   task.dueDate
                                                     ? {
                                                         isPastDue: false,
-                                                        formattedDate: moment(task.dueDate).format('MMM D, YYYY'),
+                                                        formattedDate: dayjs(task.dueDate).format('MMM D, YYYY'),
                                                       }
                                                     : undefined
                                                 }

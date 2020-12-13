@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import AccessAccount from 'shared/undraw/AccessAccount';
-import { User, Lock, Citadel } from 'shared/icons';
+import { User, Lock, Taskcafe } from 'shared/icons';
 import { useForm } from 'react-hook-form';
 
 import {
@@ -40,8 +40,8 @@ const Register = ({ onSubmit }: RegisterProps) => {
         <LoginFormWrapper>
           <LoginFormContainer>
             <LogoWrapper>
-              <Citadel width={42} height={42} />
-              <LogoTitle>Citadel</LogoTitle>
+              <Taskcafe width={42} height={42} />
+              <LogoTitle>Taskcafé</LogoTitle>
             </LogoWrapper>
             <Title>Register</Title>
             <SubTitle>Please create the system admin user</SubTitle>
@@ -55,7 +55,7 @@ const Register = ({ onSubmit }: RegisterProps) => {
                   ref={register({ required: 'Full name is required' })}
                 />
                 <FormIcon>
-                  <User color="#c2c6dc" size={20} />
+                  <User width={20} height={20} />
                 </FormIcon>
               </FormLabel>
               {errors.username && <FormError>{errors.username.message}</FormError>}
@@ -68,7 +68,7 @@ const Register = ({ onSubmit }: RegisterProps) => {
                   ref={register({ required: 'Username is required' })}
                 />
                 <FormIcon>
-                  <User color="#c2c6dc" size={20} />
+                  <User width={20} height={20} />
                 </FormIcon>
               </FormLabel>
               {errors.username && <FormError>{errors.username.message}</FormError>}
@@ -84,7 +84,7 @@ const Register = ({ onSubmit }: RegisterProps) => {
                   })}
                 />
                 <FormIcon>
-                  <User color="#c2c6dc" size={20} />
+                  <User width={20} height={20} />
                 </FormIcon>
               </FormLabel>
               {errors.email && <FormError>{errors.email.message}</FormError>}
@@ -103,7 +103,7 @@ const Register = ({ onSubmit }: RegisterProps) => {
                   })}
                 />
                 <FormIcon>
-                  <User color="#c2c6dc" size={20} />
+                  <User width={20} height={20} />
                 </FormIcon>
               </FormLabel>
               {errors.initials && <FormError>{errors.initials.message}</FormError>}

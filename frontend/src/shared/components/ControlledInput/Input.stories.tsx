@@ -1,11 +1,11 @@
 import React from 'react';
 import BaseStyles from 'App/BaseStyles';
 import NormalizeStyles from 'App/NormalizeStyles';
-import { theme } from 'App/ThemeStyles';
+import theme from 'App/ThemeStyles';
 import styled, { ThemeProvider } from 'styled-components';
+import { User } from 'shared/icons';
 
 import Input from '.';
-import { User } from 'shared/icons';
 
 export default {
   component: Input,
@@ -35,7 +35,7 @@ export const Default = () => {
         <Wrapper>
           <Input label="Label placeholder" />
           <Input width="100%" placeholder="Placeholder" />
-          <Input icon={<User size={20} />} width="100%" placeholder="Placeholder" />
+          <Input icon={<User width={20} height={20} />} width="100%" placeholder="Placeholder" />
         </Wrapper>
       </ThemeProvider>
     </>

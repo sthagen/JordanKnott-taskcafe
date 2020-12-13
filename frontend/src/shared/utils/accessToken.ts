@@ -1,6 +1,7 @@
 let accessToken = '';
 
 export function setAccessToken(newToken: string) {
+  console.log(newToken);
   accessToken = newToken;
 }
 export function getAccessToken() {
@@ -8,7 +9,7 @@ export function getAccessToken() {
 }
 
 export async function getNewToken() {
-  return fetch('http://localhost:3333/auth/refresh_token', {
+  return fetch('/auth/refresh_token', {
     method: 'POST',
     credentials: 'include',
   }).then(x => {

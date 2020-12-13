@@ -2,26 +2,30 @@ package commands
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4/source/httpfs"
+	"github.com/google/uuid"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
 	"github.com/jmoiron/sqlx"
-	"github.com/jordanknott/project-citadel/api/internal/config"
-	"github.com/jordanknott/project-citadel/api/internal/route"
+	"github.com/jordanknott/taskcafe/internal/route"
 	log "github.com/sirupsen/logrus"
 )
 
+var autoMigrate bool
+
 func newWebCmd() *cobra.Command {
-	return &cobra.Command{
+	cc := &cobra.Command{
 		Use:   "web",
 		Short: "Run the web server",
 		Long:  "Run the web & api server",
-		Run: func(cmd *cobra.Command, args []string) {
-			appConfig, err := config.LoadConfig("conf/app.toml")
-			if err != nil {
-				log.WithError(err).Error("loading config")
-			}
+		RunE: func(cmd *cobra.Command, args []string) error {
 			Formatter := new(log.TextFormatter)
 			Formatter.TimestampFormat = "02-01-2006 15:04:05"
 			Formatter.FullTimestamp = true
@@ -29,24 +33,76 @@ func newWebCmd() *cobra.Command {
 			log.SetLevel(log.InfoLevel)
 
 			connection := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=disable",
-				appConfig.Database.User,
-				appConfig.Database.Password,
-				appConfig.Database.Host,
-				appConfig.Database.Name,
+				viper.GetString("database.user"),
+				viper.GetString("database.password"),
+				viper.GetString("database.host"),
+				viper.GetString("database.name"),
 			)
-			db, err := sqlx.Connect("postgres", connection)
-
+			var db *sqlx.DB
+			var err error
+			var retryDuration time.Duration
+			maxRetryNumber := 4
+			for i := 0; i < maxRetryNumber; i++ {
+				db, err = sqlx.Connect("postgres", connection)
+				if err == nil {
+					break
+				}
+				retryDuration = time.Duration(i*2) * time.Second
+				log.WithFields(log.Fields{"retryNumber": i, "retryDuration": retryDuration}).WithError(err).Error("issue connecting to database, retrying")
+				if i != maxRetryNumber-1 {
+					time.Sleep(retryDuration)
+				}
+			}
 			if err != nil {
-				log.Panic(err)
+				return err
 			}
 			db.SetMaxOpenConns(25)
 			db.SetMaxIdleConns(25)
 			db.SetConnMaxLifetime(5 * time.Minute)
-
 			defer db.Close()
-			log.WithFields(log.Fields{"url": appConfig.General.Host}).Info("starting server")
-			r, _ := route.NewRouter(appConfig, db)
-			http.ListenAndServe(appConfig.General.Host, r)
+
+			if viper.GetBool("migrate") {
+				log.Info("running auto schema migrations")
+				if err = runMigration(db); err != nil {
+					return err
+				}
+			}
+
+			log.WithFields(log.Fields{"url": viper.GetString("server.hostname")}).Info("starting server")
+			secret := viper.GetString("server.secret")
+			if strings.TrimSpace(secret) == "" {
+				log.Warn("server.secret is not set, generating a random secret")
+				secret = uuid.New().String()
+			}
+			r, _ := route.NewRouter(db, []byte(secret))
+			return http.ListenAndServe(viper.GetString("server.hostname"), r)
 		},
 	}
+	cc.Flags().Bool("migrate", false, "if true, auto run's schema migrations before starting the web server")
+	viper.BindPFlag("migrate", cc.Flags().Lookup("migrate"))
+	viper.SetDefault("migrate", false)
+	return cc
+}
+
+func runMigration(db *sqlx.DB) error {
+	driver, err := postgres.WithInstance(db.DB, &postgres.Config{})
+	if err != nil {
+		return err
+	}
+
+	src, err := httpfs.New(migration, "./")
+	if err != nil {
+		return err
+	}
+	m, err := migrate.NewWithInstance("httpfs", src, "postgres", driver)
+	if err != nil {
+		return err
+	}
+	logger := &MigrateLog{}
+	m.Log = logger
+	err = m.Up()
+	if err != nil && err != migrate.ErrNoChange {
+		return err
+	}
+	return nil
 }

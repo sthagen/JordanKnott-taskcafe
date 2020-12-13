@@ -1,15 +1,16 @@
-import React, { useState, useContext } from 'react';
+import React, { useState } from 'react';
 import Input from 'shared/components/Input';
 import updateApolloCache from 'shared/utils/cache';
 import produce from 'immer';
 import Button from 'shared/components/Button';
-import UserIDContext from 'App/context';
+import { useCurrentUser, PermissionLevel, PermissionObjectType } from 'App/context';
 import Select from 'shared/components/Select';
 import {
   useGetTeamQuery,
   RoleCode,
   useCreateTeamMemberMutation,
   useDeleteTeamMemberMutation,
+  useUpdateTeamMemberRoleMutation,
   GetTeamQuery,
   GetTeamDocument,
 } from 'shared/generated/graphql';
@@ -19,6 +20,7 @@ import { usePopup, Popup } from 'shared/components/PopupMenu';
 import TaskAssignee from 'shared/components/TaskAssignee';
 import Member from 'shared/components/Member';
 import ControlledInput from 'shared/components/ControlledInput';
+import NOOP from 'shared/utils/noop';
 
 const MemberListWrapper = styled.div`
   flex: 1 1;
@@ -126,6 +128,7 @@ export const MiniProfileActionItem = styled.span<{ disabled?: boolean }>`
           }
         `}
 `;
+
 export const Content = styled.div`
   padding: 0 12px 12px;
 `;
@@ -157,6 +160,7 @@ export const RemoveMemberButton = styled(Button)`
   padding: 6px 12px;
   width: 100%;
 `;
+
 type TeamRoleManagerPopupProps = {
   currentUserID: string;
   subject: User;
@@ -165,7 +169,6 @@ type TeamRoleManagerPopupProps = {
   canChangeRole: boolean;
   onChangeRole: (roleCode: RoleCode) => void;
   onRemoveFromTeam?: (newOwnerID: string | null) => void;
-  onChangeTeamOwner?: (userID: string) => void;
 };
 
 const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
@@ -175,7 +178,6 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
   currentUserID,
   canChangeRole,
   onRemoveFromTeam,
-  onChangeTeamOwner,
   onChangeRole,
 }) => {
   const { hidePopup, setTab } = usePopup();
@@ -185,15 +187,6 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
       <Popup title={null} tab={0}>
         <MiniProfileActions>
           <MiniProfileActionWrapper>
-            {onChangeTeamOwner && (
-              <MiniProfileActionItem
-                onClick={() => {
-                  setTab(3);
-                }}
-              >
-                Set as team owner...
-              </MiniProfileActionItem>
-            )}
             {subject.role && (
               <MiniProfileActionItem
                 onClick={() => {
@@ -261,7 +254,7 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
           {subject.role && subject.role.code === 'owner' && (
             <>
               <Separator />
-              <WarningText>You can't change roles because there must be an owner.</WarningText>
+              <WarningText>You can not change roles because there must be an owner.</WarningText>
             </>
           )}
         </MiniProfileActions>
@@ -295,24 +288,6 @@ const TeamRoleManagerPopup: React.FC<TeamRoleManagerPopupProps> = ({
             }}
           >
             Remove Member
-          </RemoveMemberButton>
-        </Content>
-      </Popup>
-      <Popup title="Set as Team Owner?" onClose={() => hidePopup()} tab={3}>
-        <Content>
-          <DeleteDescription>
-            This will change the project owner from you to this subject. They will be able to view and edit cards,
-            remove members, and change all settings for the project. They will also be able to delete the project.
-          </DeleteDescription>
-          <RemoveMemberButton
-            color="warning"
-            onClick={() => {
-              if (onChangeTeamOwner) {
-                onChangeTeamOwner(subject.id);
-              }
-            }}
-          >
-            Set as Project Owner
           </RemoveMemberButton>
         </Content>
       </Popup>
@@ -444,7 +419,7 @@ type MembersProps = {
 const Members: React.FC<MembersProps> = ({ teamID }) => {
   const { showPopup, hidePopup } = usePopup();
   const { loading, data } = useGetTeamQuery({ variables: { teamID } });
-  const { userID } = useContext(UserIDContext);
+  const { user, setUserRoles } = useCurrentUser();
   const warning =
     'You can’t leave because you are the only admin. To make another user an admin, click their avatar, select “Change permissions…”, and select “Admin”.';
   const [createTeamMember] = useCreateTeamMemberMutation({
@@ -454,10 +429,25 @@ const Members: React.FC<MembersProps> = ({ teamID }) => {
         GetTeamDocument,
         cache =>
           produce(cache, draftCache => {
-            draftCache.findTeam.members.push({ ...response.data.createTeamMember.teamMember });
+            draftCache.findTeam.members.push({
+              ...response.data.createTeamMember.teamMember,
+              member: { __typename: 'MemberList', projects: [], teams: [] },
+              owned: { __typename: 'OwnedList', projects: [], teams: [] },
+            });
           }),
         { teamID },
       );
+    },
+  });
+  const [updateTeamMemberRole] = useUpdateTeamMemberRoleMutation({
+    onCompleted: r => {
+      if (user) {
+        setUserRoles(
+          produce(user.roles, draftRoles => {
+            draftRoles.teams.set(r.updateTeamMemberRole.teamID, r.updateTeamMemberRole.member.role.code);
+          }),
+        );
+      }
     },
   });
   const [deleteTeamMember] = useDeleteTeamMemberMutation({
@@ -479,7 +469,7 @@ const Members: React.FC<MembersProps> = ({ teamID }) => {
     return <span>loading</span>;
   }
 
-  if (data) {
+  if (data && user) {
     return (
       <MemberContainer>
         <FilterTab>
@@ -497,29 +487,31 @@ const Members: React.FC<MembersProps> = ({ teamID }) => {
             </ListDesc>
             <ListActions>
               <FilterSearch width="250px" variant="alternate" placeholder="Filter by name" />
-              <InviteMemberButton
-                onClick={$target => {
-                  showPopup(
-                    $target,
-                    <UserManagementPopup
-                      users={data.users}
-                      teamMembers={data.findTeam.members}
-                      onAddTeamMember={userID => {
-                        createTeamMember({ variables: { userID, teamID } });
-                      }}
-                    />,
-                  );
-                }}
-              >
-                <InviteIcon width={16} height={16} />
-                Invite Team Members
-              </InviteMemberButton>
+              {user.isAdmin(PermissionLevel.TEAM, PermissionObjectType.TEAM, data.findTeam.id) && (
+                <InviteMemberButton
+                  onClick={$target => {
+                    showPopup(
+                      $target,
+                      <UserManagementPopup
+                        users={data.users}
+                        teamMembers={data.findTeam.members}
+                        onAddTeamMember={userID => {
+                          createTeamMember({ variables: { userID, teamID } });
+                        }}
+                      />,
+                    );
+                  }}
+                >
+                  <InviteIcon width={16} height={16} />
+                  Invite Team Members
+                </InviteMemberButton>
+              )}
             </ListActions>
           </MemberListHeader>
           <MemberList>
             {data.findTeam.members.map(member => (
               <MemberListItem>
-                <MemberProfile showRoleIcons size={32} onMemberProfile={() => {}} member={member} />
+                <MemberProfile showRoleIcons size={32} onMemberProfile={NOOP} member={member} />
                 <MemberListItemDetails>
                   <MemberItemName>{member.fullName}</MemberItemName>
                   <MemberItemUsername>{`@${member.username}`}</MemberItemUsername>
@@ -532,15 +524,14 @@ const Members: React.FC<MembersProps> = ({ teamID }) => {
                       showPopup(
                         $target,
                         <TeamRoleManagerPopup
-                          currentUserID={userID ?? ''}
+                          currentUserID={user.id ?? ''}
                           subject={member}
                           members={data.findTeam.members}
                           warning={member.role && member.role.code === 'owner' ? warning : null}
-                          onChangeTeamOwner={
-                            member.role && member.role.code !== 'owner' ? (userID: string) => {} : undefined
-                          }
-                          canChangeRole={member.role && member.role.code !== 'owner'}
-                          onChangeRole={roleCode => {}}
+                          canChangeRole={user.isAdmin(PermissionLevel.TEAM, PermissionObjectType.TEAM, teamID)}
+                          onChangeRole={roleCode => {
+                            updateTeamMemberRole({ variables: { userID: member.id, teamID, roleCode } });
+                          }}
                           onRemoveFromTeam={
                             member.role && member.role.code === 'owner'
                               ? undefined

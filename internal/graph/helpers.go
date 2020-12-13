@@ -4,20 +4,15 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/jordanknott/project-citadel/api/internal/db"
+	"github.com/jordanknott/taskcafe/internal/db"
 )
 
+// GetOwnedList todo: remove this
 func GetOwnedList(ctx context.Context, r db.Repository, user db.UserAccount) (*OwnedList, error) {
-	ownedTeams, err := r.GetOwnedTeamsForUserID(ctx, user.UserID)
-	if err != sql.ErrNoRows && err != nil {
-		return &OwnedList{}, err
-	}
-	ownedProjects, err := r.GetOwnedProjectsForUserID(ctx, user.UserID)
-	if err != sql.ErrNoRows && err != nil {
-		return &OwnedList{}, err
-	}
-	return &OwnedList{Teams: ownedTeams, Projects: ownedProjects}, nil
+	return &OwnedList{}, nil
 }
+
+// GetMemberList returns a list of projects the user is a member of
 func GetMemberList(ctx context.Context, r db.Repository, user db.UserAccount) (*MemberList, error) {
 	projectMemberIDs, err := r.GetMemberProjectIDsForUserID(ctx, user.UserID)
 	if err != sql.ErrNoRows && err != nil {

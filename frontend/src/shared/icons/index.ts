@@ -1,8 +1,17 @@
 import Cross from './Cross';
 import Cog from './Cog';
+import Eye from './Eye';
+import List from './List';
+import At from './At';
+import Task from './Task';
+import Smile from './Smile';
+import Paperclip from './Paperclip';
+import Calendar from './Calendar';
+import Clone from './Clone';
 import Sort from './Sort';
 import Filter from './Filter';
 import DoubleChevronUp from './DoubleChevronUp';
+import Share from './Share';
 import Crown from './Crown';
 import BarChart from './BarChart';
 import UserPlus from './UserPlus';
@@ -25,7 +34,7 @@ import Checkmark from './Checkmark';
 import User from './User';
 import Users from './Users';
 import Lock from './Lock';
-import Citadel from './Citadel';
+import Taskcafe from './Taskcafe';
 import Home from './Home';
 import Stack from './Stack';
 import Question from './Question';
@@ -52,7 +61,7 @@ export {
   Stack,
   Question,
   Home,
-  Citadel,
+  Taskcafe,
   Checkmark,
   User,
   Trash,
@@ -68,8 +77,16 @@ export {
   Square,
   Filter,
   Sort,
+  At,
+  Smile,
   DoubleChevronUp,
   UserPlus,
   Crown,
   ToggleOn,
+  Calendar,
+  Clone,
+  Paperclip,
+  Share,
+  Eye,
+  List,
 };

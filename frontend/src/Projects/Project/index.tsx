@@ -4,7 +4,6 @@ import updateApolloCache from 'shared/utils/cache';
 import GlobalTopNavbar, { ProjectPopup } from 'App/TopNavbar';
 import styled from 'styled-components/macro';
 import { usePopup, Popup } from 'shared/components/PopupMenu';
-import LabelManagerEditor from './LabelManagerEditor';
 import {
   useParams,
   Route,
@@ -15,7 +14,6 @@ import {
   Redirect,
 } from 'react-router-dom';
 import {
-  useSetProjectOwnerMutation,
   useUpdateProjectMemberRoleMutation,
   useCreateProjectMemberMutation,
   useDeleteProjectMemberMutation,
@@ -34,12 +32,14 @@ import {
 } from 'shared/generated/graphql';
 
 import produce from 'immer';
-import UserIDContext from 'App/context';
+import UserContext, { useCurrentUser } from 'App/context';
 import Input from 'shared/components/Input';
 import Member from 'shared/components/Member';
-import Board from './Board';
-import Details from './Details';
 import EmptyBoard from 'shared/components/EmptyBoard';
+import NOOP from 'shared/utils/noop';
+import Board, { BoardLoading } from './Board';
+import Details from './Details';
+import LabelManagerEditor from './LabelManagerEditor';
 
 const CARD_LABEL_VARIANT_STORAGE_KEY = 'card_label_variant';
 
@@ -125,22 +125,41 @@ const Project = () => {
   const match = useRouteMatch();
 
   const [updateTaskDescription] = useUpdateTaskDescriptionMutation();
+  const taskLabelsRef = useRef<Array<TaskLabel>>([]);
   const [toggleTaskLabel] = useToggleTaskLabelMutation({
     onCompleted: newTaskLabel => {
       taskLabelsRef.current = newTaskLabel.toggleTaskLabel.task.labels;
-      console.log(taskLabelsRef.current);
     },
   });
 
   const [value, setValue] = useStateWithLocalStorage(CARD_LABEL_VARIANT_STORAGE_KEY);
   const [updateProjectMemberRole] = useUpdateProjectMemberRoleMutation();
 
-  const [deleteTask] = useDeleteTaskMutation();
+  const [deleteTask] = useDeleteTaskMutation({
+    update: (client, resp) =>
+      updateApolloCache<FindProjectQuery>(
+        client,
+        FindProjectDocument,
+        cache =>
+          produce(cache, draftCache => {
+            const taskGroupIdx = draftCache.findProject.taskGroups.findIndex(
+              tg => tg.tasks.findIndex(t => t.id === resp.data.deleteTask.taskID) !== -1,
+            );
+
+            if (taskGroupIdx !== -1) {
+              draftCache.findProject.taskGroups[taskGroupIdx].tasks = cache.findProject.taskGroups[
+                taskGroupIdx
+              ].tasks.filter(t => t.id !== resp.data.deleteTask.taskID);
+            }
+          }),
+        { projectID },
+      ),
+  });
 
   const [updateTaskName] = useUpdateTaskNameMutation();
 
-  const { loading, data } = useFindProjectQuery({
-    variables: { projectId: projectID },
+  const { loading, data, error } = useFindProjectQuery({
+    variables: { projectID },
   });
 
   const [updateProjectName] = useUpdateProjectNameMutation({
@@ -152,7 +171,7 @@ const Project = () => {
           produce(cache, draftCache => {
             draftCache.findProject.name = newName.data.updateProjectName.name;
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
@@ -166,11 +185,10 @@ const Project = () => {
           produce(cache, draftCache => {
             draftCache.findProject.members.push({ ...response.data.createProjectMember.member });
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
-  const [setProjectOwner] = useSetProjectOwnerMutation();
   const [deleteProjectMember] = useDeleteProjectMemberMutation({
     update: (client, response) => {
       updateApolloCache<FindProjectQuery>(
@@ -178,40 +196,38 @@ const Project = () => {
         FindProjectDocument,
         cache =>
           produce(cache, draftCache => {
-            console.log(cache);
-            console.log(response);
             draftCache.findProject.members = cache.findProject.members.filter(
               m => m.id !== response.data.deleteProjectMember.member.id,
             );
           }),
-        { projectId: projectID },
+        { projectID },
       );
     },
   });
 
-  const { userID } = useContext(UserIDContext);
+  const { user } = useCurrentUser();
   const location = useLocation();
 
   const { showPopup, hidePopup } = usePopup();
   const $labelsRef = useRef<HTMLDivElement>(null);
   const labelsRef = useRef<Array<ProjectLabel>>([]);
-  const taskLabelsRef = useRef<Array<TaskLabel>>([]);
   useEffect(() => {
     if (data) {
-      document.title = `${data.findProject.name} | Citadel`;
+      document.title = `${data.findProject.name} | Taskcafé`;
     }
   }, [data]);
   if (loading) {
     return (
       <>
-        <GlobalTopNavbar onSaveProjectName={projectName => {}} name="" projectID={null} />
-        <Board loading />
+        <GlobalTopNavbar onSaveProjectName={NOOP} name="" projectID={null} />
+        <BoardLoading />
       </>
     );
   }
+  if (error) {
+    history.push('/projects');
+  }
   if (data) {
-    console.log(data.findProject);
-
     labelsRef.current = data.findProject.labels;
 
     return (
@@ -221,7 +237,6 @@ const Project = () => {
             updateProjectMemberRole({ variables: { userID, roleCode, projectID } });
           }}
           onChangeProjectOwner={uid => {
-            setProjectOwner({ variables: { ownerID: uid, projectID } });
             hidePopup();
           }}
           onRemoveFromBoard={userID => {
@@ -248,6 +263,7 @@ const Project = () => {
           currentTab={0}
           projectMembers={data.findProject.members}
           projectID={projectID}
+          teamID={data.findProject.team ? data.findProject.team.id : null}
           name={data.findProject.name}
         />
         <Route path={`${match.path}`} exact render={() => <Redirect to={`${match.url}/board`} />} />
@@ -268,7 +284,7 @@ const Project = () => {
           path={`${match.path}/board/c/:taskID`}
           render={(routeProps: RouteComponentProps<TaskRouteProps>) => (
             <Details
-              refreshCache={() => {}}
+              refreshCache={NOOP}
               availableMembers={data.findProject.members}
               projectURL={`${match.url}/board`}
               taskID={routeProps.match.params.taskID}
@@ -276,10 +292,21 @@ const Project = () => {
                 updateTaskName({ variables: { taskID: updatedTask.id, name: newName } });
               }}
               onTaskDescriptionChange={(updatedTask, newDescription) => {
-                updateTaskDescription({ variables: { taskID: updatedTask.id, description: newDescription } });
+                updateTaskDescription({
+                  variables: { taskID: updatedTask.id, description: newDescription },
+                  optimisticResponse: {
+                    __typename: 'Mutation',
+                    updateTaskDescription: {
+                      __typename: 'Task',
+                      id: updatedTask.id,
+                      description: newDescription,
+                    },
+                  },
+                });
               }}
               onDeleteTask={deletedTask => {
                 deleteTask({ variables: { taskID: deletedTask.id } });
+                history.push(`${match.url}/board`);
               }}
               onOpenAddLabelPopup={(task, $targetRef) => {
                 taskLabelsRef.current = task.labels;

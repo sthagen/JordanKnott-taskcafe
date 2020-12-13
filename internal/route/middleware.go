@@ -6,11 +6,18 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jordanknott/project-citadel/api/internal/auth"
+	"github.com/jordanknott/taskcafe/internal/auth"
+	"github.com/jordanknott/taskcafe/internal/utils"
 	log "github.com/sirupsen/logrus"
 )
 
-func AuthenticationMiddleware(next http.Handler) http.Handler {
+// AuthenticationMiddleware is a middleware that requires a valid JWT token to be passed via the Authorization header
+type AuthenticationMiddleware struct {
+	jwtKey []byte
+}
+
+// Middleware returns the middleware handler
+func (m *AuthenticationMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bearerTokenRaw := r.Header.Get("Authorization")
 		splitToken := strings.Split(bearerTokenRaw, "Bearer")
@@ -19,7 +26,7 @@ func AuthenticationMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		accessTokenString := strings.TrimSpace(splitToken[1])
-		accessClaims, err := auth.ValidateAccessToken(accessTokenString)
+		accessClaims, err := auth.ValidateAccessToken(accessTokenString, m.jwtKey)
 		if err != nil {
 			if _, ok := err.(*auth.ErrExpiredToken); ok {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -51,8 +58,9 @@ func AuthenticationMiddleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		ctx := context.WithValue(r.Context(), "userID", userID)
-		ctx = context.WithValue(ctx, "restricted_mode", accessClaims.Restricted)
+		ctx := context.WithValue(r.Context(), utils.UserIDKey, userID)
+		ctx = context.WithValue(ctx, utils.RestrictedModeKey, accessClaims.Restricted)
+		ctx = context.WithValue(ctx, utils.OrgRoleKey, accessClaims.OrgRole)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
