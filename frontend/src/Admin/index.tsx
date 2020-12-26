@@ -5,6 +5,7 @@ import GlobalTopNavbar from 'App/TopNavbar';
 import {
   useUsersQuery,
   useDeleteUserAccountMutation,
+  useDeleteInvitedUserAccountMutation,
   useCreateUserAccountMutation,
   UsersDocument,
   UsersQuery,
@@ -81,7 +82,7 @@ const AddUserInput = styled(Input)`
 `;
 
 const InputError = styled.span`
-  color: rgba(${props => props.theme.colors.danger});
+  color: ${props => props.theme.colors.danger};
   font-size: 12px;
 `;
 
@@ -173,14 +174,25 @@ const AdminRoute = () => {
   useEffect(() => {
     document.title = 'Admin | Taskcafé';
   }, []);
-  const { loading, data } = useUsersQuery();
+  const { loading, data } = useUsersQuery({ fetchPolicy: 'cache-and-network' });
   const { showPopup, hidePopup } = usePopup();
   const { user } = useCurrentUser();
+  const [deleteInvitedUser] = useDeleteInvitedUserAccountMutation({
+    update: (client, response) => {
+      updateApolloCache<UsersQuery>(client, UsersDocument, cache =>
+        produce(cache, draftCache => {
+          draftCache.invitedUsers = cache.invitedUsers.filter(
+            u => u.id !== response.data?.deleteInvitedUserAccount.invitedUser.id,
+          );
+        }),
+      );
+    },
+  });
   const [deleteUser] = useDeleteUserAccountMutation({
     update: (client, response) => {
       updateApolloCache<UsersQuery>(client, UsersDocument, cache =>
         produce(cache, draftCache => {
-          draftCache.users = cache.users.filter(u => u.id !== response.data.deleteUserAccount.userAccount.id);
+          draftCache.users = cache.users.filter(u => u.id !== response.data?.deleteUserAccount.userAccount.id);
         }),
       );
     },
@@ -191,7 +203,7 @@ const AdminRoute = () => {
         query: UsersDocument,
       });
       const newData = produce(cacheData, (draftState: any) => {
-        draftState.users = [...draftState.users, { ...createData.data.createUserAccount }];
+        draftState.users = [...draftState.users, { ...createData.data?.createUserAccount }];
       });
 
       client.writeQuery({
@@ -202,9 +214,6 @@ const AdminRoute = () => {
       });
     },
   });
-  if (loading) {
-    return <GlobalTopNavbar projectID={null} onSaveProjectName={NOOP} name={null} />;
-  }
   if (data && user) {
     if (user.roles.org !== 'admin') {
       return <Redirect to="/" />;
@@ -215,9 +224,14 @@ const AdminRoute = () => {
         <Admin
           initialTab={0}
           users={data.users}
+          invitedUsers={data.invitedUsers}
           canInviteUser={user.roles.org === 'admin'}
           onInviteUser={NOOP}
           onUpdateUserPassword={() => {
+            hidePopup();
+          }}
+          onDeleteInvitedUser={invitedUserID => {
+            deleteInvitedUser({ variables: { invitedUserID } });
             hidePopup();
           }}
           onDeleteUser={(userID, newOwnerID) => {
@@ -242,7 +256,7 @@ const AdminRoute = () => {
       </>
     );
   }
-  return <span>error</span>;
+  return <GlobalTopNavbar projectID={null} onSaveProjectName={NOOP} name={null} />;
 };
 
 export default AdminRoute;

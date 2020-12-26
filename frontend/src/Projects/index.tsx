@@ -20,6 +20,8 @@ import Input from 'shared/components/Input';
 import updateApolloCache from 'shared/utils/cache';
 import produce from 'immer';
 import NOOP from 'shared/utils/noop';
+import theme from 'App/ThemeStyles';
+import { mixin } from '../shared/utils/styles';
 
 type CreateTeamData = { teamName: string };
 
@@ -54,7 +56,7 @@ const CreateTeamForm: React.FC<CreateTeamFormProps> = ({ onCreateTeam }) => {
 };
 
 const ProjectAddTile = styled.div`
-  background-color: rgba(${props => props.theme.colors.bg.primary}, 0.4);
+  background-color: ${props => mixin.rgba(props.theme.colors.bg.primary, 0.4)};
   background-size: cover;
   background-position: 50%;
   color: #fff;
@@ -176,7 +178,7 @@ const SectionActionLink = styled(Link)`
 
 const ProjectSectionTitle = styled.h3`
   font-size: 16px;
-  color: rgba(${props => props.theme.colors.text.primary});
+  color: ${props => props.theme.colors.text.primary};
 `;
 
 const ProjectsContainer = styled.div`
@@ -200,7 +202,7 @@ type ShowNewProject = {
 
 const Projects = () => {
   const { showPopup, hidePopup } = usePopup();
-  const { loading, data } = useGetProjectsQuery({ fetchPolicy: 'network-only' });
+  const { loading, data } = useGetProjectsQuery({ pollInterval: 3000, fetchPolicy: 'cache-and-network' });
   useEffect(() => {
     document.title = 'Taskcafé';
   }, []);
@@ -208,7 +210,9 @@ const Projects = () => {
     update: (client, newProject) => {
       updateApolloCache<GetProjectsQuery>(client, GetProjectsDocument, cache =>
         produce(cache, draftCache => {
-          draftCache.projects.push({ ...newProject.data.createProject });
+          if (newProject.data) {
+            draftCache.projects.push({ ...newProject.data.createProject });
+          }
         }),
       );
     },
@@ -220,16 +224,15 @@ const Projects = () => {
     update: (client, createData) => {
       updateApolloCache<GetProjectsQuery>(client, GetProjectsDocument, cache =>
         produce(cache, draftCache => {
-          draftCache.teams.push({ ...createData.data.createTeam });
+          if (createData.data) {
+            draftCache.teams.push({ ...createData.data?.createTeam });
+          }
         }),
       );
     },
   });
-  if (loading) {
-    return <GlobalTopNavbar onSaveProjectName={NOOP} projectID={null} name={null} />;
-  }
 
-  const colors = ['#e362e3', '#7a6ff0', '#37c5ab', '#aa62e3', '#e8384f'];
+  const colors = theme.colors.multiColors;
   if (data && user) {
     const { projects, teams, organizations } = data;
     const organizationID = organizations[0].id ?? null;
@@ -389,7 +392,7 @@ const Projects = () => {
       </>
     );
   }
-  return <div>Error!</div>;
+  return <GlobalTopNavbar onSaveProjectName={NOOP} projectID={null} name={null} />;
 };
 
 export default Projects;

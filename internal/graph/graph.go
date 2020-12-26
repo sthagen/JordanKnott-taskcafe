@@ -19,16 +19,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/jordanknott/taskcafe/internal/auth"
 	"github.com/jordanknott/taskcafe/internal/db"
+	"github.com/jordanknott/taskcafe/internal/logger"
 	"github.com/jordanknott/taskcafe/internal/utils"
 	log "github.com/sirupsen/logrus"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
 // NewHandler returns a new graphql endpoint handler.
-func NewHandler(repo db.Repository) http.Handler {
+func NewHandler(repo db.Repository, emailConfig utils.EmailConfig) http.Handler {
 	c := Config{
 		Resolvers: &Resolver{
-			Repository: repo,
+			Repository:  repo,
+			EmailConfig: emailConfig,
 		},
 	}
 	c.Directives.HasRole = func(ctx context.Context, obj interface{}, next graphql.Resolver, roles []RoleLevel, level ActionLevel, typeArg ObjectType) (interface{}, error) {
@@ -43,7 +45,7 @@ func NewHandler(repo db.Repository) http.Handler {
 		}
 
 		var subjectID uuid.UUID
-		in := graphql.GetResolverContext(ctx).Args["input"]
+		in := graphql.GetFieldContext(ctx).Args["input"]
 		val := reflect.ValueOf(in) // could be any underlying type
 		if val.Kind() == reflect.Ptr {
 			val = reflect.Indirect(val)
@@ -63,10 +65,10 @@ func NewHandler(repo db.Repository) http.Handler {
 		default:
 			fieldName = "ProjectID"
 		}
-		log.WithFields(log.Fields{"typeArg": typeArg, "fieldName": fieldName}).Info("getting field by name")
+		logger.New(ctx).WithFields(log.Fields{"typeArg": typeArg, "fieldName": fieldName}).Info("getting field by name")
 		subjectField := val.FieldByName(fieldName)
 		if !subjectField.IsValid() {
-			log.Error("subject field name does not exist on input type")
+			logger.New(ctx).Error("subject field name does not exist on input type")
 			return nil, errors.New("subject field name does not exist on input type")
 		}
 		if fieldName == "TeamID" && subjectField.IsNil() {
@@ -76,13 +78,13 @@ func NewHandler(repo db.Repository) http.Handler {
 		}
 		subjectID, ok = subjectField.Interface().(uuid.UUID)
 		if !ok {
-			log.Error("error while casting subject UUID")
+			logger.New(ctx).Error("error while casting subject UUID")
 			return nil, errors.New("error while casting subject uuid")
 		}
 
 		var err error
 		if level == ActionLevelProject {
-			log.WithFields(log.Fields{"subjectID": subjectID}).Info("fetching subject ID by typeArg")
+			logger.New(ctx).WithFields(log.Fields{"subjectID": subjectID}).Info("fetching subject ID by typeArg")
 			if typeArg == ObjectTypeTask {
 				subjectID, err = repo.GetProjectIDForTask(ctx, subjectID)
 			}
@@ -96,7 +98,7 @@ func NewHandler(repo db.Repository) http.Handler {
 				subjectID, err = repo.GetProjectIDForTaskChecklistItem(ctx, subjectID)
 			}
 			if err != nil {
-				log.WithError(err).Error("error while getting subject ID")
+				logger.New(ctx).WithError(err).Error("error while getting subject ID")
 				return nil, err
 			}
 			projectRoles, err := GetProjectRoles(ctx, repo, subjectID)
@@ -109,13 +111,13 @@ func NewHandler(repo db.Repository) http.Handler {
 						},
 					}
 				}
-				log.WithError(err).Error("error while getting project roles")
+				logger.New(ctx).WithError(err).Error("error while getting project roles")
 				return nil, err
 			}
 			for _, validRole := range roles {
-				log.WithFields(log.Fields{"validRole": validRole}).Info("checking role")
+				logger.New(ctx).WithFields(log.Fields{"validRole": validRole}).Info("checking role")
 				if CompareRoleLevel(projectRoles.TeamRole, validRole) || CompareRoleLevel(projectRoles.ProjectRole, validRole) {
-					log.WithFields(log.Fields{"teamRole": projectRoles.TeamRole, "projectRole": projectRoles.ProjectRole}).Info("is team or project role")
+					logger.New(ctx).WithFields(log.Fields{"teamRole": projectRoles.TeamRole, "projectRole": projectRoles.ProjectRole}).Info("is team or project role")
 					return next(ctx)
 				}
 			}
@@ -132,7 +134,7 @@ func NewHandler(repo db.Repository) http.Handler {
 			}
 			role, err := repo.GetTeamRoleForUserID(ctx, db.GetTeamRoleForUserIDParams{UserID: userID, TeamID: subjectID})
 			if err != nil {
-				log.WithError(err).Error("error while getting team roles for user ID")
+				logger.New(ctx).WithError(err).Error("error while getting team roles for user ID")
 				return nil, err
 			}
 			for _, validRole := range roles {
@@ -254,3 +256,28 @@ func GetActionType(actionType int32) ActionType {
 		panic("Not a valid entity type!")
 	}
 }
+
+type MemberType string
+
+const (
+	MemberTypeInvited MemberType = "INVITED"
+	MemberTypeJoined  MemberType = "JOINED"
+)
+
+type MasterEntry struct {
+	MemberType MemberType
+	ID         uuid.UUID
+}
+
+const (
+	TASK_ADDED_TO_TASK_GROUP int32 = 1
+	TASK_MOVED_TO_TASK_GROUP int32 = 2
+	TASK_MARK_COMPLETE       int32 = 3
+	TASK_MARK_INCOMPLETE     int32 = 4
+	TASK_DUE_DATE_CHANGED    int32 = 5
+	TASK_DUE_DATE_ADDED      int32 = 6
+	TASK_DUE_DATE_REMOVED    int32 = 7
+	TASK_CHECKLIST_CHANGED   int32 = 8
+	TASK_CHECKLIST_ADDED     int32 = 9
+	TASK_CHECKLIST_REMOVED   int32 = 10
+)

@@ -1,6 +1,5 @@
 import styled, { css } from 'styled-components';
 import TextareaAutosize from 'react-autosize-textarea';
-import { mixin } from 'shared/utils/styles';
 
 export const Container = styled.div`
   width: 272px;
@@ -34,7 +33,7 @@ export const AddCardButton = styled.a`
   &:hover {
     color: #c2c6dc;
     text-decoration: none;
-    background: rgb(115, 103, 240);
+    background: ${props => props.theme.colors.primary};
   }
 `;
 export const Wrapper = styled.div`
@@ -73,7 +72,6 @@ export const HeaderName = styled(TextareaAutosize)`
   box-shadow: none;
   font-weight: 600;
   margin: -4px 0;
-  padding: 4px 8px;
 
   letter-spacing: normal;
   word-spacing: normal;
@@ -97,7 +95,7 @@ export const Header = styled.div<{ isEditing: boolean }>`
     props.isEditing &&
     css`
       & ${HeaderName} {
-        box-shadow: rgb(115, 103, 240) 0px 0px 0px 1px;
+        box-shadow: ${props.theme.colors.primary} 0px 0px 0px 1px;
       }
     `}
 `;

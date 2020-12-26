@@ -3,32 +3,11 @@ import updateApolloCache from 'shared/utils/cache';
 import { usePopup, Popup } from 'shared/components/PopupMenu';
 import produce from 'immer';
 import {
-  useUpdateProjectMemberRoleMutation,
-  useCreateProjectMemberMutation,
-  useDeleteProjectMemberMutation,
-  useSetTaskCompleteMutation,
-  useToggleTaskLabelMutation,
-  useUpdateProjectNameMutation,
-  useFindProjectQuery,
-  useUpdateTaskGroupNameMutation,
-  useUpdateTaskNameMutation,
   useUpdateProjectLabelMutation,
-  useCreateTaskMutation,
   useDeleteProjectLabelMutation,
-  useDeleteTaskMutation,
-  useUpdateTaskLocationMutation,
-  useUpdateTaskGroupLocationMutation,
-  useCreateTaskGroupMutation,
-  useDeleteTaskGroupMutation,
-  useUpdateTaskDescriptionMutation,
-  useAssignTaskMutation,
-  DeleteTaskDocument,
   FindProjectDocument,
   useCreateProjectLabelMutation,
-  useUnassignTaskMutation,
-  useUpdateTaskDueDateMutation,
   FindProjectQuery,
-  useUsersQuery,
 } from 'shared/generated/graphql';
 import LabelManager from 'shared/components/PopupMenu/LabelManager';
 import LabelEditor from 'shared/components/PopupMenu/LabelEditor';
@@ -57,7 +36,9 @@ const LabelManagerEditor: React.FC<LabelManagerEditorProps> = ({
         FindProjectDocument,
         cache =>
           produce(cache, draftCache => {
-            draftCache.findProject.labels.push({ ...newLabelData.data.createProjectLabel });
+            if (newLabelData.data) {
+              draftCache.findProject.labels.push({ ...newLabelData.data.createProjectLabel });
+            }
           }),
         {
           projectID,
@@ -74,7 +55,7 @@ const LabelManagerEditor: React.FC<LabelManagerEditorProps> = ({
         cache =>
           produce(cache, draftCache => {
             draftCache.findProject.labels = cache.findProject.labels.filter(
-              label => label.id !== newLabelData.data.deleteProjectLabel.id,
+              label => label.id !== newLabelData.data?.deleteProjectLabel.id,
             );
           }),
         { projectID },

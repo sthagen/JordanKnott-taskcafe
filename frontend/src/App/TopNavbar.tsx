@@ -20,6 +20,7 @@ import MiniProfile from 'shared/components/MiniProfile';
 import cache from 'App/cache';
 import NOOP from 'shared/utils/noop';
 import NotificationPopup, { NotificationItem } from 'shared/components/NotifcationPopup';
+import theme from './ThemeStyles';
 
 const TeamContainer = styled.div`
   display: flex;
@@ -62,7 +63,7 @@ const TeamProjectBackground = styled.div<{ color: string }>`
   opacity: 1;
   border-radius: 3px;
   &:before {
-    background: rgba(${props => props.theme.colors.bg.secondary});
+    background: ${props => props.theme.colors.bg.secondary};
     bottom: 0;
     content: '';
     left: 0;
@@ -114,7 +115,7 @@ const TeamProjectContainer = styled.div`
   margin: 0 4px 4px 0;
   min-width: 0;
   &:hover ${TeamProjectTitle} {
-    color: rgba(${props => props.theme.colors.text.secondary});
+    color: ${props => props.theme.colors.text.secondary};
   }
   &:hover ${TeamProjectAvatar} {
     opacity: 1;
@@ -124,15 +125,13 @@ const TeamProjectContainer = styled.div`
   }
 `;
 
-const colors = ['#e362e3', '#7a6ff0', '#37c5ab', '#aa62e3', '#e8384f'];
+const colors = [theme.colors.primary, theme.colors.secondary];
 
 const ProjectFinder = () => {
-  const { loading, data } = useGetProjectsQuery();
-  if (loading) {
-    return <span>loading</span>;
-  }
+  const { loading, data } = useGetProjectsQuery({ fetchPolicy: 'cache-and-network' });
   if (data) {
     const { projects, teams } = data;
+    const personalProjects = data.projects.filter(p => p.team === null);
     const projectTeams = teams.map(team => {
       return {
         id: team.id,
@@ -142,6 +141,22 @@ const ProjectFinder = () => {
     });
     return (
       <>
+        <TeamContainer>
+          <TeamTitle>Personal</TeamTitle>
+          <TeamProjects>
+            {personalProjects.map((project, idx) => (
+              <TeamProjectContainer key={project.id}>
+                <TeamProjectLink to={`/projects/${project.id}`}>
+                  <TeamProjectBackground color={colors[idx % 5]} />
+                  <TeamProjectAvatar color={colors[idx % 5]} />
+                  <TeamProjectContent>
+                    <TeamProjectTitle>{project.name}</TeamProjectTitle>
+                  </TeamProjectContent>
+                </TeamProjectLink>
+              </TeamProjectContainer>
+            ))}
+          </TeamProjects>
+        </TeamContainer>
         {projectTeams.map(team => (
           <TeamContainer key={team.id}>
             <TeamTitle>{team.name}</TeamTitle>
@@ -163,10 +178,10 @@ const ProjectFinder = () => {
       </>
     );
   }
-  return <span>error</span>;
+  return <span>loading</span>;
 };
 type ProjectPopupProps = {
-  history: History<History.PoorMansUnknown>;
+  history: any;
   name: string;
   projectID: string;
 };
@@ -181,7 +196,7 @@ export const ProjectPopup: React.FC<ProjectPopupProps> = ({ history, name, proje
 
       const newData = produce(cacheData, (draftState: any) => {
         draftState.projects = draftState.projects.filter(
-          (project: any) => project.id !== deleteData.data.deleteProject.project.id,
+          (project: any) => project.id !== deleteData.data?.deleteProject.project.id,
         );
       });
 
@@ -230,10 +245,12 @@ type GlobalTopNavbarProps = {
   menuType?: Array<MenuItem>;
   onChangeRole?: (userID: string, roleCode: RoleCode) => void;
   projectMembers?: null | Array<TaskUser>;
+  projectInvitedMembers?: null | Array<InvitedUser>;
   onSaveProjectName?: (projectName: string) => void;
   onInviteUser?: ($target: React.RefObject<HTMLElement>) => void;
   onSetTab?: (tab: number) => void;
   onRemoveFromBoard?: (userID: string) => void;
+  onRemoveInvitedFromBoard?: (email: string) => void;
 };
 
 const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
@@ -246,8 +263,10 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
   name,
   popupContent,
   projectMembers,
+  projectInvitedMembers,
   onInviteUser,
   onSaveProjectName,
+  onRemoveInvitedFromBoard,
   onRemoveFromBoard,
 }) => {
   const { user, setUserRoles, setUser } = useCurrentUser();
@@ -324,7 +343,7 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
             />
           ))}
         </NotificationPopup>,
-        { width: 415, borders: false, diamondColor: '#7367f0' },
+        { width: 415, borders: false, diamondColor: theme.colors.primary },
       );
     }
   };
@@ -333,6 +352,34 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
     return null;
   }
   const userIsTeamOrProjectAdmin = user.isAdmin(PermissionLevel.TEAM, PermissionObjectType.TEAM, teamID);
+  const onInvitedMemberProfile = ($targetRef: React.RefObject<HTMLElement>, email: string) => {
+    const member = projectInvitedMembers ? projectInvitedMembers.find(u => u.email === email) : null;
+    if (member) {
+      showPopup(
+        $targetRef,
+        <MiniProfile
+          onRemoveFromBoard={() => {
+            if (onRemoveInvitedFromBoard) {
+              onRemoveInvitedFromBoard(member.email);
+            }
+          }}
+          invited
+          user={{
+            id: member.email,
+            fullName: member.email,
+            bio: 'Invited',
+            profileIcon: {
+              bgColor: '#000',
+              url: null,
+              initials: member.email.charAt(0),
+            },
+          }}
+          bio=""
+        />,
+      );
+    }
+  };
+
   const onMemberProfile = ($targetRef: React.RefObject<HTMLElement>, memberID: string) => {
     const member = projectMembers ? projectMembers.find(u => u.id === memberID) : null;
     const warning =
@@ -382,6 +429,7 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
         canEditProjectName={userIsTeamOrProjectAdmin}
         canInviteUser={userIsTeamOrProjectAdmin}
         onMemberProfile={onMemberProfile}
+        onInvitedMemberProfile={onInvitedMemberProfile}
         onInviteUser={onInviteUser}
         onChangeRole={onChangeRole}
         onChangeProjectOwner={onChangeProjectOwner}
@@ -392,6 +440,7 @@ const GlobalTopNavbar: React.FC<GlobalTopNavbarProps> = ({
           history.push('/');
         }}
         projectMembers={projectMembers}
+        projectInvitedMembers={projectInvitedMembers}
         onProfileClick={onProfileClick}
         onSaveName={onSaveProjectName}
         onOpenSettings={onOpenSettings}
