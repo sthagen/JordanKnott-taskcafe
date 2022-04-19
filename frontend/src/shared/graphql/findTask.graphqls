@@ -1,11 +1,21 @@
-query findTask($taskID: UUID!) {
-  findTask(input: {taskID: $taskID}) {
+query findTask($taskID: String!) {
+  findTask(input: {taskShortID: $taskID}) {
     id
+    shortId
     name
+    watched
     description
-    dueDate
+    dueDate {
+      at
+      notifications {
+        id
+        period
+        duration
+      }
+    }
     position
     complete
+    hasTime
     taskGroup {
       id
       name

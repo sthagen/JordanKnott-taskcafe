@@ -1,5 +1,25 @@
+type UserAccount {
+  id: ID!
+  email: String!
+  createdAt: Time!
+  fullName: String!
+  initials: String!
+  bio: String!
+  role: Role!
+  username: String!
+  profileIcon: ProfileIcon!
+  owned: OwnedList!
+  member: MemberList!
+}
+
+type InvitedUserAccount {
+  id: ID!
+  email: String!
+  invitedOn: Time!
+  member: MemberList!
+}
+
 extend type Mutation {
-  createRefreshToken(input: NewRefreshToken!): RefreshToken!
   createUserAccount(input: NewUserAccount!):
     UserAccount! @hasRole(roles: [ADMIN], level: ORG, type: ORG)
   deleteUserAccount(input: DeleteUserAccount!):
@@ -72,10 +92,6 @@ type UpdateUserRolePayload {
   user: UserAccount!
 }
 
-input NewRefreshToken {
-  userID: UUID!
-}
-
 input NewUserAccount {
   username: String!
   email: String!
@@ -98,3 +114,4 @@ type DeleteUserAccountPayload {
   ok: Boolean!
   userAccount: UserAccount!
 }
+

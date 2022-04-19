@@ -1,7 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import styled from 'styled-components/macro';
 import GlobalTopNavbar from 'App/TopNavbar';
-import { getAccessToken } from 'shared/utils/accessToken';
 import Settings from 'shared/components/Settings';
 import {
   useMeQuery,
@@ -45,18 +44,15 @@ const Projects = () => {
         name="file"
         style={{ display: 'none' }}
         ref={$fileUpload}
-        onChange={e => {
+        onChange={(e) => {
           if (e.target.files) {
             const fileData = new FormData();
             fileData.append('file', e.target.files[0]);
-            const accessToken = getAccessToken();
             axios
               .post('/users/me/avatar', fileData, {
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                },
+                withCredentials: true,
               })
-              .then(res => {
+              .then((res) => {
                 if ($fileUpload && $fileUpload.current) {
                   $fileUpload.current.value = '';
                   refetch();
@@ -66,7 +62,7 @@ const Projects = () => {
         }}
       />
       <GlobalTopNavbar projectID={null} onSaveProjectName={NOOP} name={null} />
-      {!loading && data && (
+      {!loading && data && data.me && (
         <Settings
           profile={data.me.user}
           onProfileAvatarChange={() => {
@@ -75,13 +71,13 @@ const Projects = () => {
             }
           }}
           onResetPassword={(password, done) => {
-            updateUserPassword({ variables: { userID: user.id, password } });
+            updateUserPassword({ variables: { userID: user, password } });
             toast('Password was changed!');
             done();
           }}
           onChangeUserInfo={(d, done) => {
             updateUserInfo({
-              variables: { name: d.full_name, bio: d.bio, email: d.email, initials: d.initials },
+              variables: { name: d.fullName, bio: d.bio, email: d.email, initials: d.initials },
             });
             toast('User info was saved!');
             done();

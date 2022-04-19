@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -45,7 +46,7 @@ type ResolverRoot interface {
 	Project() ProjectResolver
 	ProjectLabel() ProjectLabelResolver
 	Query() QueryResolver
-	RefreshToken() RefreshTokenResolver
+	Subscription() SubscriptionResolver
 	Task() TaskResolver
 	TaskActivity() TaskActivityResolver
 	TaskChecklist() TaskChecklistResolver
@@ -58,7 +59,8 @@ type ResolverRoot interface {
 }
 
 type DirectiveRoot struct {
-	HasRole func(ctx context.Context, obj interface{}, next graphql.Resolver, roles []RoleLevel, level ActionLevel, typeArg ObjectType) (res interface{}, err error)
+	HasRole      func(ctx context.Context, obj interface{}, next graphql.Resolver, roles []RoleLevel, level ActionLevel, typeArg ObjectType) (res interface{}, err error)
+	RequiresUser func(ctx context.Context, obj interface{}, next graphql.Resolver) (res interface{}, err error)
 }
 
 type ComplexityRoot struct {
@@ -73,9 +75,18 @@ type ComplexityRoot struct {
 		Total    func(childComplexity int) int
 	}
 
+	CommentsBadge struct {
+		Total  func(childComplexity int) int
+		Unread func(childComplexity int) int
+	}
+
 	CreateTaskCommentPayload struct {
 		Comment func(childComplexity int) int
 		TaskID  func(childComplexity int) int
+	}
+
+	CreateTaskDueDateNotificationsResult struct {
+		Notifications func(childComplexity int) int
 	}
 
 	CreateTeamMemberPayload struct {
@@ -123,6 +134,10 @@ type ComplexityRoot struct {
 		TaskID    func(childComplexity int) int
 	}
 
+	DeleteTaskDueDateNotificationsResult struct {
+		Notifications func(childComplexity int) int
+	}
+
 	DeleteTaskGroupPayload struct {
 		AffectedRows func(childComplexity int) int
 		Ok           func(childComplexity int) int
@@ -155,8 +170,23 @@ type ComplexityRoot struct {
 		UserAccount func(childComplexity int) int
 	}
 
+	DueDate struct {
+		At            func(childComplexity int) int
+		Notifications func(childComplexity int) int
+	}
+
+	DueDateNotification struct {
+		Duration func(childComplexity int) int
+		ID       func(childComplexity int) int
+		Period   func(childComplexity int) int
+	}
+
 	DuplicateTaskGroupPayload struct {
 		TaskGroup func(childComplexity int) int
+	}
+
+	HasUnreadNotificationsResult struct {
+		Unread func(childComplexity int) int
 	}
 
 	InviteProjectMembersPayload struct {
@@ -186,6 +216,7 @@ type ComplexityRoot struct {
 	}
 
 	MePayload struct {
+		Organization func(childComplexity int) int
 		ProjectRoles func(childComplexity int) int
 		TeamRoles    func(childComplexity int) int
 		User         func(childComplexity int) int
@@ -219,11 +250,11 @@ type ComplexityRoot struct {
 		ClearProfileAvatar              func(childComplexity int) int
 		CreateProject                   func(childComplexity int, input NewProject) int
 		CreateProjectLabel              func(childComplexity int, input NewProjectLabel) int
-		CreateRefreshToken              func(childComplexity int, input NewRefreshToken) int
 		CreateTask                      func(childComplexity int, input NewTask) int
 		CreateTaskChecklist             func(childComplexity int, input CreateTaskChecklist) int
 		CreateTaskChecklistItem         func(childComplexity int, input CreateTaskChecklistItem) int
 		CreateTaskComment               func(childComplexity int, input *CreateTaskComment) int
+		CreateTaskDueDateNotifications  func(childComplexity int, input []CreateTaskDueDateNotification) int
 		CreateTaskGroup                 func(childComplexity int, input NewTaskGroup) int
 		CreateTeam                      func(childComplexity int, input NewTeam) int
 		CreateTeamMember                func(childComplexity int, input CreateTeamMember) int
@@ -237,6 +268,7 @@ type ComplexityRoot struct {
 		DeleteTaskChecklist             func(childComplexity int, input DeleteTaskChecklist) int
 		DeleteTaskChecklistItem         func(childComplexity int, input DeleteTaskChecklistItem) int
 		DeleteTaskComment               func(childComplexity int, input *DeleteTaskComment) int
+		DeleteTaskDueDateNotifications  func(childComplexity int, input []DeleteTaskDueDateNotification) int
 		DeleteTaskGroup                 func(childComplexity int, input DeleteTaskGroupInput) int
 		DeleteTaskGroupTasks            func(childComplexity int, input DeleteTaskGroupTasks) int
 		DeleteTeam                      func(childComplexity int, input DeleteTeam) int
@@ -245,11 +277,15 @@ type ComplexityRoot struct {
 		DuplicateTaskGroup              func(childComplexity int, input DuplicateTaskGroup) int
 		InviteProjectMembers            func(childComplexity int, input InviteProjectMembers) int
 		LogoutUser                      func(childComplexity int, input LogoutUser) int
+		NotificationMarkAllRead         func(childComplexity int) int
+		NotificationToggleRead          func(childComplexity int, input NotificationToggleReadInput) int
 		RemoveTaskLabel                 func(childComplexity int, input *RemoveTaskLabelInput) int
 		SetTaskChecklistItemComplete    func(childComplexity int, input SetTaskChecklistItemComplete) int
 		SetTaskComplete                 func(childComplexity int, input SetTaskComplete) int
 		SortTaskGroup                   func(childComplexity int, input SortTaskGroup) int
+		ToggleProjectVisibility         func(childComplexity int, input ToggleProjectVisibility) int
 		ToggleTaskLabel                 func(childComplexity int, input ToggleTaskLabelInput) int
+		ToggleTaskWatch                 func(childComplexity int, input ToggleTaskWatch) int
 		UnassignTask                    func(childComplexity int, input *UnassignTaskInput) int
 		UpdateProjectLabel              func(childComplexity int, input UpdateProjectLabel) int
 		UpdateProjectLabelColor         func(childComplexity int, input UpdateProjectLabelColor) int
@@ -263,6 +299,7 @@ type ComplexityRoot struct {
 		UpdateTaskComment               func(childComplexity int, input *UpdateTaskComment) int
 		UpdateTaskDescription           func(childComplexity int, input UpdateTaskDescriptionInput) int
 		UpdateTaskDueDate               func(childComplexity int, input UpdateTaskDueDate) int
+		UpdateTaskDueDateNotifications  func(childComplexity int, input []UpdateTaskDueDateNotification) int
 		UpdateTaskGroupLocation         func(childComplexity int, input NewTaskGroupLocation) int
 		UpdateTaskGroupName             func(childComplexity int, input UpdateTaskGroupName) int
 		UpdateTaskLocation              func(childComplexity int, input NewTaskLocation) int
@@ -273,25 +310,45 @@ type ComplexityRoot struct {
 		UpdateUserRole                  func(childComplexity int, input UpdateUserRole) int
 	}
 
+	MyTasksPayload struct {
+		Projects func(childComplexity int) int
+		Tasks    func(childComplexity int) int
+	}
+
 	Notification struct {
 		ActionType func(childComplexity int) int
-		Actor      func(childComplexity int) int
+		CausedBy   func(childComplexity int) int
 		CreatedAt  func(childComplexity int) int
-		Entity     func(childComplexity int) int
+		Data       func(childComplexity int) int
 		ID         func(childComplexity int) int
-		Read       func(childComplexity int) int
 	}
 
-	NotificationActor struct {
-		ID   func(childComplexity int) int
-		Name func(childComplexity int) int
-		Type func(childComplexity int) int
+	NotificationCausedBy struct {
+		Fullname func(childComplexity int) int
+		ID       func(childComplexity int) int
+		Username func(childComplexity int) int
 	}
 
-	NotificationEntity struct {
-		ID   func(childComplexity int) int
-		Name func(childComplexity int) int
-		Type func(childComplexity int) int
+	NotificationData struct {
+		Key   func(childComplexity int) int
+		Value func(childComplexity int) int
+	}
+
+	NotificationMarkAllAsReadResult struct {
+		Success func(childComplexity int) int
+	}
+
+	Notified struct {
+		ID           func(childComplexity int) int
+		Notification func(childComplexity int) int
+		Read         func(childComplexity int) int
+		ReadAt       func(childComplexity int) int
+	}
+
+	NotifiedResult struct {
+		Notified   func(childComplexity int) int
+		PageInfo   func(childComplexity int) int
+		TotalCount func(childComplexity int) int
 	}
 
 	Organization struct {
@@ -309,6 +366,11 @@ type ComplexityRoot struct {
 		Teams    func(childComplexity int) int
 	}
 
+	PageInfo struct {
+		EndCursor   func(childComplexity int) int
+		HasNextPage func(childComplexity int) int
+	}
+
 	ProfileIcon struct {
 		BgColor  func(childComplexity int) int
 		Initials func(childComplexity int) int
@@ -322,6 +384,9 @@ type ComplexityRoot struct {
 		Labels         func(childComplexity int) int
 		Members        func(childComplexity int) int
 		Name           func(childComplexity int) int
+		Permission     func(childComplexity int) int
+		PublicOn       func(childComplexity int) int
+		ShortID        func(childComplexity int) int
 		TaskGroups     func(childComplexity int) int
 		Team           func(childComplexity int) int
 	}
@@ -333,33 +398,40 @@ type ComplexityRoot struct {
 		Name        func(childComplexity int) int
 	}
 
+	ProjectPermission struct {
+		Org     func(childComplexity int) int
+		Project func(childComplexity int) int
+		Team    func(childComplexity int) int
+	}
+
 	ProjectRole struct {
 		ProjectID func(childComplexity int) int
 		RoleCode  func(childComplexity int) int
 	}
 
-	Query struct {
-		FindProject   func(childComplexity int, input FindProject) int
-		FindTask      func(childComplexity int, input FindTask) int
-		FindTeam      func(childComplexity int, input FindTeam) int
-		FindUser      func(childComplexity int, input FindUser) int
-		InvitedUsers  func(childComplexity int) int
-		LabelColors   func(childComplexity int) int
-		Me            func(childComplexity int) int
-		Notifications func(childComplexity int) int
-		Organizations func(childComplexity int) int
-		Projects      func(childComplexity int, input *ProjectsFilter) int
-		SearchMembers func(childComplexity int, input MemberSearchFilter) int
-		TaskGroups    func(childComplexity int) int
-		Teams         func(childComplexity int) int
-		Users         func(childComplexity int) int
+	ProjectTaskMapping struct {
+		ProjectID func(childComplexity int) int
+		TaskID    func(childComplexity int) int
 	}
 
-	RefreshToken struct {
-		CreatedAt func(childComplexity int) int
-		ExpiresAt func(childComplexity int) int
-		ID        func(childComplexity int) int
-		UserID    func(childComplexity int) int
+	Query struct {
+		FindProject            func(childComplexity int, input FindProject) int
+		FindTask               func(childComplexity int, input FindTask) int
+		FindTeam               func(childComplexity int, input FindTeam) int
+		FindUser               func(childComplexity int, input FindUser) int
+		HasUnreadNotifications func(childComplexity int) int
+		InvitedUsers           func(childComplexity int) int
+		LabelColors            func(childComplexity int) int
+		Me                     func(childComplexity int) int
+		MyTasks                func(childComplexity int, input MyTasks) int
+		Notifications          func(childComplexity int) int
+		Notified               func(childComplexity int, input NotifiedInput) int
+		Organizations          func(childComplexity int) int
+		Projects               func(childComplexity int, input *ProjectsFilter) int
+		SearchMembers          func(childComplexity int, input MemberSearchFilter) int
+		TaskGroups             func(childComplexity int) int
+		Teams                  func(childComplexity int) int
+		Users                  func(childComplexity int) int
 	}
 
 	Role struct {
@@ -370,6 +442,10 @@ type ComplexityRoot struct {
 	SortTaskGroupPayload struct {
 		TaskGroupID func(childComplexity int) int
 		Tasks       func(childComplexity int) int
+	}
+
+	Subscription struct {
+		NotificationAdded func(childComplexity int) int
 	}
 
 	Task struct {
@@ -383,11 +459,14 @@ type ComplexityRoot struct {
 		CreatedAt   func(childComplexity int) int
 		Description func(childComplexity int) int
 		DueDate     func(childComplexity int) int
+		HasTime     func(childComplexity int) int
 		ID          func(childComplexity int) int
 		Labels      func(childComplexity int) int
 		Name        func(childComplexity int) int
 		Position    func(childComplexity int) int
+		ShortID     func(childComplexity int) int
 		TaskGroup   func(childComplexity int) int
+		Watched     func(childComplexity int) int
 	}
 
 	TaskActivity struct {
@@ -405,6 +484,7 @@ type ComplexityRoot struct {
 
 	TaskBadges struct {
 		Checklist func(childComplexity int) int
+		Comments  func(childComplexity int) int
 	}
 
 	TaskChecklist struct {
@@ -448,15 +528,25 @@ type ComplexityRoot struct {
 	}
 
 	Team struct {
-		CreatedAt func(childComplexity int) int
-		ID        func(childComplexity int) int
-		Members   func(childComplexity int) int
-		Name      func(childComplexity int) int
+		CreatedAt  func(childComplexity int) int
+		ID         func(childComplexity int) int
+		Members    func(childComplexity int) int
+		Name       func(childComplexity int) int
+		Permission func(childComplexity int) int
+	}
+
+	TeamPermission struct {
+		Org  func(childComplexity int) int
+		Team func(childComplexity int) int
 	}
 
 	TeamRole struct {
 		RoleCode func(childComplexity int) int
 		TeamID   func(childComplexity int) int
+	}
+
+	ToggleProjectVisibilityPayload struct {
+		Project func(childComplexity int) int
 	}
 
 	ToggleTaskLabelPayload struct {
@@ -482,6 +572,10 @@ type ComplexityRoot struct {
 	UpdateTaskCommentPayload struct {
 		Comment func(childComplexity int) int
 		TaskID  func(childComplexity int) int
+	}
+
+	UpdateTaskDueDateNotificationsResult struct {
+		Notifications func(childComplexity int) int
 	}
 
 	UpdateTaskLocationPayload struct {
@@ -527,9 +621,8 @@ type LabelColorResolver interface {
 	ID(ctx context.Context, obj *db.LabelColor) (uuid.UUID, error)
 }
 type MutationResolver interface {
-	CreateProject(ctx context.Context, input NewProject) (*db.Project, error)
-	DeleteProject(ctx context.Context, input DeleteProject) (*DeleteProjectPayload, error)
-	UpdateProjectName(ctx context.Context, input *UpdateProjectName) (*db.Project, error)
+	NotificationToggleRead(ctx context.Context, input NotificationToggleReadInput) (*Notified, error)
+	NotificationMarkAllRead(ctx context.Context) (*NotificationMarkAllAsReadResult, error)
 	CreateProjectLabel(ctx context.Context, input NewProjectLabel) (*db.ProjectLabel, error)
 	DeleteProjectLabel(ctx context.Context, input DeleteProjectLabel) (*db.ProjectLabel, error)
 	UpdateProjectLabel(ctx context.Context, input UpdateProjectLabel) (*db.ProjectLabel, error)
@@ -539,15 +632,10 @@ type MutationResolver interface {
 	DeleteProjectMember(ctx context.Context, input DeleteProjectMember) (*DeleteProjectMemberPayload, error)
 	UpdateProjectMemberRole(ctx context.Context, input UpdateProjectMemberRole) (*UpdateProjectMemberRolePayload, error)
 	DeleteInvitedProjectMember(ctx context.Context, input DeleteInvitedProjectMember) (*DeleteInvitedProjectMemberPayload, error)
-	CreateTask(ctx context.Context, input NewTask) (*db.Task, error)
-	DeleteTask(ctx context.Context, input DeleteTaskInput) (*DeleteTaskPayload, error)
-	UpdateTaskDescription(ctx context.Context, input UpdateTaskDescriptionInput) (*db.Task, error)
-	UpdateTaskLocation(ctx context.Context, input NewTaskLocation) (*UpdateTaskLocationPayload, error)
-	UpdateTaskName(ctx context.Context, input UpdateTaskName) (*db.Task, error)
-	SetTaskComplete(ctx context.Context, input SetTaskComplete) (*db.Task, error)
-	UpdateTaskDueDate(ctx context.Context, input UpdateTaskDueDate) (*db.Task, error)
-	AssignTask(ctx context.Context, input *AssignTaskInput) (*db.Task, error)
-	UnassignTask(ctx context.Context, input *UnassignTaskInput) (*db.Task, error)
+	CreateProject(ctx context.Context, input NewProject) (*db.Project, error)
+	DeleteProject(ctx context.Context, input DeleteProject) (*DeleteProjectPayload, error)
+	UpdateProjectName(ctx context.Context, input *UpdateProjectName) (*db.Project, error)
+	ToggleProjectVisibility(ctx context.Context, input ToggleProjectVisibility) (*ToggleProjectVisibilityPayload, error)
 	CreateTaskChecklist(ctx context.Context, input CreateTaskChecklist) (*db.TaskChecklist, error)
 	DeleteTaskChecklist(ctx context.Context, input DeleteTaskChecklist) (*DeleteTaskChecklistPayload, error)
 	UpdateTaskChecklistName(ctx context.Context, input UpdateTaskChecklistName) (*db.TaskChecklist, error)
@@ -570,12 +658,24 @@ type MutationResolver interface {
 	AddTaskLabel(ctx context.Context, input *AddTaskLabelInput) (*db.Task, error)
 	RemoveTaskLabel(ctx context.Context, input *RemoveTaskLabelInput) (*db.Task, error)
 	ToggleTaskLabel(ctx context.Context, input ToggleTaskLabelInput) (*ToggleTaskLabelPayload, error)
-	DeleteTeam(ctx context.Context, input DeleteTeam) (*DeleteTeamPayload, error)
-	CreateTeam(ctx context.Context, input NewTeam) (*db.Team, error)
+	CreateTask(ctx context.Context, input NewTask) (*db.Task, error)
+	DeleteTask(ctx context.Context, input DeleteTaskInput) (*DeleteTaskPayload, error)
+	UpdateTaskDescription(ctx context.Context, input UpdateTaskDescriptionInput) (*db.Task, error)
+	UpdateTaskLocation(ctx context.Context, input NewTaskLocation) (*UpdateTaskLocationPayload, error)
+	UpdateTaskName(ctx context.Context, input UpdateTaskName) (*db.Task, error)
+	SetTaskComplete(ctx context.Context, input SetTaskComplete) (*db.Task, error)
+	UpdateTaskDueDate(ctx context.Context, input UpdateTaskDueDate) (*db.Task, error)
+	ToggleTaskWatch(ctx context.Context, input ToggleTaskWatch) (*db.Task, error)
+	AssignTask(ctx context.Context, input *AssignTaskInput) (*db.Task, error)
+	UnassignTask(ctx context.Context, input *UnassignTaskInput) (*db.Task, error)
+	CreateTaskDueDateNotifications(ctx context.Context, input []CreateTaskDueDateNotification) (*CreateTaskDueDateNotificationsResult, error)
+	UpdateTaskDueDateNotifications(ctx context.Context, input []UpdateTaskDueDateNotification) (*UpdateTaskDueDateNotificationsResult, error)
+	DeleteTaskDueDateNotifications(ctx context.Context, input []DeleteTaskDueDateNotification) (*DeleteTaskDueDateNotificationsResult, error)
 	CreateTeamMember(ctx context.Context, input CreateTeamMember) (*CreateTeamMemberPayload, error)
 	UpdateTeamMemberRole(ctx context.Context, input UpdateTeamMemberRole) (*UpdateTeamMemberRolePayload, error)
 	DeleteTeamMember(ctx context.Context, input DeleteTeamMember) (*DeleteTeamMemberPayload, error)
-	CreateRefreshToken(ctx context.Context, input NewRefreshToken) (*db.RefreshToken, error)
+	DeleteTeam(ctx context.Context, input DeleteTeam) (*DeleteTeamPayload, error)
+	CreateTeam(ctx context.Context, input NewTeam) (*db.Team, error)
 	CreateUserAccount(ctx context.Context, input NewUserAccount) (*db.UserAccount, error)
 	DeleteUserAccount(ctx context.Context, input DeleteUserAccount) (*DeleteUserAccountPayload, error)
 	DeleteInvitedUserAccount(ctx context.Context, input DeleteInvitedUserAccount) (*DeleteInvitedUserAccountPayload, error)
@@ -587,10 +687,9 @@ type MutationResolver interface {
 }
 type NotificationResolver interface {
 	ID(ctx context.Context, obj *db.Notification) (uuid.UUID, error)
-	Entity(ctx context.Context, obj *db.Notification) (*NotificationEntity, error)
 	ActionType(ctx context.Context, obj *db.Notification) (ActionType, error)
-	Actor(ctx context.Context, obj *db.Notification) (*NotificationActor, error)
-
+	CausedBy(ctx context.Context, obj *db.Notification) (*NotificationCausedBy, error)
+	Data(ctx context.Context, obj *db.Notification) ([]NotificationData, error)
 	CreatedAt(ctx context.Context, obj *db.Notification) (*time.Time, error)
 }
 type OrganizationResolver interface {
@@ -603,6 +702,8 @@ type ProjectResolver interface {
 	TaskGroups(ctx context.Context, obj *db.Project) ([]db.TaskGroup, error)
 	Members(ctx context.Context, obj *db.Project) ([]Member, error)
 	InvitedMembers(ctx context.Context, obj *db.Project) ([]InvitedMember, error)
+	PublicOn(ctx context.Context, obj *db.Project) (*time.Time, error)
+	Permission(ctx context.Context, obj *db.Project) (*ProjectPermission, error)
 	Labels(ctx context.Context, obj *db.Project) ([]db.ProjectLabel, error)
 }
 type ProjectLabelResolver interface {
@@ -616,26 +717,31 @@ type QueryResolver interface {
 	Users(ctx context.Context) ([]db.UserAccount, error)
 	InvitedUsers(ctx context.Context) ([]InvitedUserAccount, error)
 	FindUser(ctx context.Context, input FindUser) (*db.UserAccount, error)
-	FindProject(ctx context.Context, input FindProject) (*db.Project, error)
-	FindTask(ctx context.Context, input FindTask) (*db.Task, error)
 	Projects(ctx context.Context, input *ProjectsFilter) ([]db.Project, error)
-	FindTeam(ctx context.Context, input FindTeam) (*db.Team, error)
 	Teams(ctx context.Context) ([]db.Team, error)
+	FindTeam(ctx context.Context, input FindTeam) (*db.Team, error)
+	MyTasks(ctx context.Context, input MyTasks) (*MyTasksPayload, error)
 	LabelColors(ctx context.Context) ([]db.LabelColor, error)
 	TaskGroups(ctx context.Context) ([]db.TaskGroup, error)
 	Me(ctx context.Context) (*MePayload, error)
-	Notifications(ctx context.Context) ([]db.Notification, error)
+	Notifications(ctx context.Context) ([]Notified, error)
+	Notified(ctx context.Context, input NotifiedInput) (*NotifiedResult, error)
+	HasUnreadNotifications(ctx context.Context) (*HasUnreadNotificationsResult, error)
+	FindProject(ctx context.Context, input FindProject) (*db.Project, error)
+	FindTask(ctx context.Context, input FindTask) (*db.Task, error)
 	SearchMembers(ctx context.Context, input MemberSearchFilter) ([]MemberSearchResult, error)
 }
-type RefreshTokenResolver interface {
-	ID(ctx context.Context, obj *db.RefreshToken) (uuid.UUID, error)
+type SubscriptionResolver interface {
+	NotificationAdded(ctx context.Context) (<-chan *Notified, error)
 }
 type TaskResolver interface {
 	ID(ctx context.Context, obj *db.Task) (uuid.UUID, error)
+
 	TaskGroup(ctx context.Context, obj *db.Task) (*db.TaskGroup, error)
 
 	Description(ctx context.Context, obj *db.Task) (*string, error)
-	DueDate(ctx context.Context, obj *db.Task) (*time.Time, error)
+	Watched(ctx context.Context, obj *db.Task) (bool, error)
+	DueDate(ctx context.Context, obj *db.Task) (*DueDate, error)
 
 	CompletedAt(ctx context.Context, obj *db.Task) (*time.Time, error)
 	Assigned(ctx context.Context, obj *db.Task) ([]Member, error)
@@ -681,6 +787,7 @@ type TaskLabelResolver interface {
 type TeamResolver interface {
 	ID(ctx context.Context, obj *db.Team) (uuid.UUID, error)
 
+	Permission(ctx context.Context, obj *db.Team) (*TeamPermission, error)
 	Members(ctx context.Context, obj *db.Team) ([]Member, error)
 }
 type UserAccountResolver interface {
@@ -743,6 +850,20 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.ChecklistBadge.Total(childComplexity), true
 
+	case "CommentsBadge.total":
+		if e.complexity.CommentsBadge.Total == nil {
+			break
+		}
+
+		return e.complexity.CommentsBadge.Total(childComplexity), true
+
+	case "CommentsBadge.unread":
+		if e.complexity.CommentsBadge.Unread == nil {
+			break
+		}
+
+		return e.complexity.CommentsBadge.Unread(childComplexity), true
+
 	case "CreateTaskCommentPayload.comment":
 		if e.complexity.CreateTaskCommentPayload.Comment == nil {
 			break
@@ -756,6 +877,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.CreateTaskCommentPayload.TaskID(childComplexity), true
+
+	case "CreateTaskDueDateNotificationsResult.notifications":
+		if e.complexity.CreateTaskDueDateNotificationsResult.Notifications == nil {
+			break
+		}
+
+		return e.complexity.CreateTaskDueDateNotificationsResult.Notifications(childComplexity), true
 
 	case "CreateTeamMemberPayload.team":
 		if e.complexity.CreateTeamMemberPayload.Team == nil {
@@ -883,6 +1011,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.DeleteTaskCommentPayload.TaskID(childComplexity), true
 
+	case "DeleteTaskDueDateNotificationsResult.notifications":
+		if e.complexity.DeleteTaskDueDateNotificationsResult.Notifications == nil {
+			break
+		}
+
+		return e.complexity.DeleteTaskDueDateNotificationsResult.Notifications(childComplexity), true
+
 	case "DeleteTaskGroupPayload.affectedRows":
 		if e.complexity.DeleteTaskGroupPayload.AffectedRows == nil {
 			break
@@ -981,12 +1116,54 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.DeleteUserAccountPayload.UserAccount(childComplexity), true
 
+	case "DueDate.at":
+		if e.complexity.DueDate.At == nil {
+			break
+		}
+
+		return e.complexity.DueDate.At(childComplexity), true
+
+	case "DueDate.notifications":
+		if e.complexity.DueDate.Notifications == nil {
+			break
+		}
+
+		return e.complexity.DueDate.Notifications(childComplexity), true
+
+	case "DueDateNotification.duration":
+		if e.complexity.DueDateNotification.Duration == nil {
+			break
+		}
+
+		return e.complexity.DueDateNotification.Duration(childComplexity), true
+
+	case "DueDateNotification.id":
+		if e.complexity.DueDateNotification.ID == nil {
+			break
+		}
+
+		return e.complexity.DueDateNotification.ID(childComplexity), true
+
+	case "DueDateNotification.period":
+		if e.complexity.DueDateNotification.Period == nil {
+			break
+		}
+
+		return e.complexity.DueDateNotification.Period(childComplexity), true
+
 	case "DuplicateTaskGroupPayload.taskGroup":
 		if e.complexity.DuplicateTaskGroupPayload.TaskGroup == nil {
 			break
 		}
 
 		return e.complexity.DuplicateTaskGroupPayload.TaskGroup(childComplexity), true
+
+	case "HasUnreadNotificationsResult.unread":
+		if e.complexity.HasUnreadNotificationsResult.Unread == nil {
+			break
+		}
+
+		return e.complexity.HasUnreadNotificationsResult.Unread(childComplexity), true
 
 	case "InviteProjectMembersPayload.invitedMembers":
 		if e.complexity.InviteProjectMembersPayload.InvitedMembers == nil {
@@ -1085,6 +1262,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.LabelColor.Position(childComplexity), true
+
+	case "MePayload.organization":
+		if e.complexity.MePayload.Organization == nil {
+			break
+		}
+
+		return e.complexity.MePayload.Organization(childComplexity), true
 
 	case "MePayload.projectRoles":
 		if e.complexity.MePayload.ProjectRoles == nil {
@@ -1253,18 +1437,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.CreateProjectLabel(childComplexity, args["input"].(NewProjectLabel)), true
 
-	case "Mutation.createRefreshToken":
-		if e.complexity.Mutation.CreateRefreshToken == nil {
-			break
-		}
-
-		args, err := ec.field_Mutation_createRefreshToken_args(context.TODO(), rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Mutation.CreateRefreshToken(childComplexity, args["input"].(NewRefreshToken)), true
-
 	case "Mutation.createTask":
 		if e.complexity.Mutation.CreateTask == nil {
 			break
@@ -1312,6 +1484,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Mutation.CreateTaskComment(childComplexity, args["input"].(*CreateTaskComment)), true
+
+	case "Mutation.createTaskDueDateNotifications":
+		if e.complexity.Mutation.CreateTaskDueDateNotifications == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_createTaskDueDateNotifications_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Mutation.CreateTaskDueDateNotifications(childComplexity, args["input"].([]CreateTaskDueDateNotification)), true
 
 	case "Mutation.createTaskGroup":
 		if e.complexity.Mutation.CreateTaskGroup == nil {
@@ -1469,6 +1653,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.DeleteTaskComment(childComplexity, args["input"].(*DeleteTaskComment)), true
 
+	case "Mutation.deleteTaskDueDateNotifications":
+		if e.complexity.Mutation.DeleteTaskDueDateNotifications == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_deleteTaskDueDateNotifications_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Mutation.DeleteTaskDueDateNotifications(childComplexity, args["input"].([]DeleteTaskDueDateNotification)), true
+
 	case "Mutation.deleteTaskGroup":
 		if e.complexity.Mutation.DeleteTaskGroup == nil {
 			break
@@ -1565,6 +1761,25 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.LogoutUser(childComplexity, args["input"].(LogoutUser)), true
 
+	case "Mutation.notificationMarkAllRead":
+		if e.complexity.Mutation.NotificationMarkAllRead == nil {
+			break
+		}
+
+		return e.complexity.Mutation.NotificationMarkAllRead(childComplexity), true
+
+	case "Mutation.notificationToggleRead":
+		if e.complexity.Mutation.NotificationToggleRead == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_notificationToggleRead_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Mutation.NotificationToggleRead(childComplexity, args["input"].(NotificationToggleReadInput)), true
+
 	case "Mutation.removeTaskLabel":
 		if e.complexity.Mutation.RemoveTaskLabel == nil {
 			break
@@ -1613,6 +1828,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.SortTaskGroup(childComplexity, args["input"].(SortTaskGroup)), true
 
+	case "Mutation.toggleProjectVisibility":
+		if e.complexity.Mutation.ToggleProjectVisibility == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_toggleProjectVisibility_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Mutation.ToggleProjectVisibility(childComplexity, args["input"].(ToggleProjectVisibility)), true
+
 	case "Mutation.toggleTaskLabel":
 		if e.complexity.Mutation.ToggleTaskLabel == nil {
 			break
@@ -1624,6 +1851,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.Mutation.ToggleTaskLabel(childComplexity, args["input"].(ToggleTaskLabelInput)), true
+
+	case "Mutation.toggleTaskWatch":
+		if e.complexity.Mutation.ToggleTaskWatch == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_toggleTaskWatch_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Mutation.ToggleTaskWatch(childComplexity, args["input"].(ToggleTaskWatch)), true
 
 	case "Mutation.unassignTask":
 		if e.complexity.Mutation.UnassignTask == nil {
@@ -1781,6 +2020,18 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.UpdateTaskDueDate(childComplexity, args["input"].(UpdateTaskDueDate)), true
 
+	case "Mutation.updateTaskDueDateNotifications":
+		if e.complexity.Mutation.UpdateTaskDueDateNotifications == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_updateTaskDueDateNotifications_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Mutation.UpdateTaskDueDateNotifications(childComplexity, args["input"].([]UpdateTaskDueDateNotification)), true
+
 	case "Mutation.updateTaskGroupLocation":
 		if e.complexity.Mutation.UpdateTaskGroupLocation == nil {
 			break
@@ -1877,6 +2128,20 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Mutation.UpdateUserRole(childComplexity, args["input"].(UpdateUserRole)), true
 
+	case "MyTasksPayload.projects":
+		if e.complexity.MyTasksPayload.Projects == nil {
+			break
+		}
+
+		return e.complexity.MyTasksPayload.Projects(childComplexity), true
+
+	case "MyTasksPayload.tasks":
+		if e.complexity.MyTasksPayload.Tasks == nil {
+			break
+		}
+
+		return e.complexity.MyTasksPayload.Tasks(childComplexity), true
+
 	case "Notification.actionType":
 		if e.complexity.Notification.ActionType == nil {
 			break
@@ -1884,12 +2149,12 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Notification.ActionType(childComplexity), true
 
-	case "Notification.actor":
-		if e.complexity.Notification.Actor == nil {
+	case "Notification.causedBy":
+		if e.complexity.Notification.CausedBy == nil {
 			break
 		}
 
-		return e.complexity.Notification.Actor(childComplexity), true
+		return e.complexity.Notification.CausedBy(childComplexity), true
 
 	case "Notification.createdAt":
 		if e.complexity.Notification.CreatedAt == nil {
@@ -1898,12 +2163,12 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Notification.CreatedAt(childComplexity), true
 
-	case "Notification.entity":
-		if e.complexity.Notification.Entity == nil {
+	case "Notification.data":
+		if e.complexity.Notification.Data == nil {
 			break
 		}
 
-		return e.complexity.Notification.Entity(childComplexity), true
+		return e.complexity.Notification.Data(childComplexity), true
 
 	case "Notification.id":
 		if e.complexity.Notification.ID == nil {
@@ -1912,54 +2177,96 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Notification.ID(childComplexity), true
 
-	case "Notification.read":
-		if e.complexity.Notification.Read == nil {
+	case "NotificationCausedBy.fullname":
+		if e.complexity.NotificationCausedBy.Fullname == nil {
 			break
 		}
 
-		return e.complexity.Notification.Read(childComplexity), true
+		return e.complexity.NotificationCausedBy.Fullname(childComplexity), true
 
-	case "NotificationActor.id":
-		if e.complexity.NotificationActor.ID == nil {
+	case "NotificationCausedBy.id":
+		if e.complexity.NotificationCausedBy.ID == nil {
 			break
 		}
 
-		return e.complexity.NotificationActor.ID(childComplexity), true
+		return e.complexity.NotificationCausedBy.ID(childComplexity), true
 
-	case "NotificationActor.name":
-		if e.complexity.NotificationActor.Name == nil {
+	case "NotificationCausedBy.username":
+		if e.complexity.NotificationCausedBy.Username == nil {
 			break
 		}
 
-		return e.complexity.NotificationActor.Name(childComplexity), true
+		return e.complexity.NotificationCausedBy.Username(childComplexity), true
 
-	case "NotificationActor.type":
-		if e.complexity.NotificationActor.Type == nil {
+	case "NotificationData.key":
+		if e.complexity.NotificationData.Key == nil {
 			break
 		}
 
-		return e.complexity.NotificationActor.Type(childComplexity), true
+		return e.complexity.NotificationData.Key(childComplexity), true
 
-	case "NotificationEntity.id":
-		if e.complexity.NotificationEntity.ID == nil {
+	case "NotificationData.value":
+		if e.complexity.NotificationData.Value == nil {
 			break
 		}
 
-		return e.complexity.NotificationEntity.ID(childComplexity), true
+		return e.complexity.NotificationData.Value(childComplexity), true
 
-	case "NotificationEntity.name":
-		if e.complexity.NotificationEntity.Name == nil {
+	case "NotificationMarkAllAsReadResult.success":
+		if e.complexity.NotificationMarkAllAsReadResult.Success == nil {
 			break
 		}
 
-		return e.complexity.NotificationEntity.Name(childComplexity), true
+		return e.complexity.NotificationMarkAllAsReadResult.Success(childComplexity), true
 
-	case "NotificationEntity.type":
-		if e.complexity.NotificationEntity.Type == nil {
+	case "Notified.id":
+		if e.complexity.Notified.ID == nil {
 			break
 		}
 
-		return e.complexity.NotificationEntity.Type(childComplexity), true
+		return e.complexity.Notified.ID(childComplexity), true
+
+	case "Notified.notification":
+		if e.complexity.Notified.Notification == nil {
+			break
+		}
+
+		return e.complexity.Notified.Notification(childComplexity), true
+
+	case "Notified.read":
+		if e.complexity.Notified.Read == nil {
+			break
+		}
+
+		return e.complexity.Notified.Read(childComplexity), true
+
+	case "Notified.readAt":
+		if e.complexity.Notified.ReadAt == nil {
+			break
+		}
+
+		return e.complexity.Notified.ReadAt(childComplexity), true
+
+	case "NotifiedResult.notified":
+		if e.complexity.NotifiedResult.Notified == nil {
+			break
+		}
+
+		return e.complexity.NotifiedResult.Notified(childComplexity), true
+
+	case "NotifiedResult.pageInfo":
+		if e.complexity.NotifiedResult.PageInfo == nil {
+			break
+		}
+
+		return e.complexity.NotifiedResult.PageInfo(childComplexity), true
+
+	case "NotifiedResult.totalCount":
+		if e.complexity.NotifiedResult.TotalCount == nil {
+			break
+		}
+
+		return e.complexity.NotifiedResult.TotalCount(childComplexity), true
 
 	case "Organization.id":
 		if e.complexity.Organization.ID == nil {
@@ -2002,6 +2309,20 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.OwnersList.Teams(childComplexity), true
+
+	case "PageInfo.endCursor":
+		if e.complexity.PageInfo.EndCursor == nil {
+			break
+		}
+
+		return e.complexity.PageInfo.EndCursor(childComplexity), true
+
+	case "PageInfo.hasNextPage":
+		if e.complexity.PageInfo.HasNextPage == nil {
+			break
+		}
+
+		return e.complexity.PageInfo.HasNextPage(childComplexity), true
 
 	case "ProfileIcon.bgColor":
 		if e.complexity.ProfileIcon.BgColor == nil {
@@ -2066,6 +2387,27 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Project.Name(childComplexity), true
 
+	case "Project.permission":
+		if e.complexity.Project.Permission == nil {
+			break
+		}
+
+		return e.complexity.Project.Permission(childComplexity), true
+
+	case "Project.publicOn":
+		if e.complexity.Project.PublicOn == nil {
+			break
+		}
+
+		return e.complexity.Project.PublicOn(childComplexity), true
+
+	case "Project.shortId":
+		if e.complexity.Project.ShortID == nil {
+			break
+		}
+
+		return e.complexity.Project.ShortID(childComplexity), true
+
 	case "Project.taskGroups":
 		if e.complexity.Project.TaskGroups == nil {
 			break
@@ -2108,6 +2450,27 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.ProjectLabel.Name(childComplexity), true
 
+	case "ProjectPermission.org":
+		if e.complexity.ProjectPermission.Org == nil {
+			break
+		}
+
+		return e.complexity.ProjectPermission.Org(childComplexity), true
+
+	case "ProjectPermission.project":
+		if e.complexity.ProjectPermission.Project == nil {
+			break
+		}
+
+		return e.complexity.ProjectPermission.Project(childComplexity), true
+
+	case "ProjectPermission.team":
+		if e.complexity.ProjectPermission.Team == nil {
+			break
+		}
+
+		return e.complexity.ProjectPermission.Team(childComplexity), true
+
 	case "ProjectRole.projectID":
 		if e.complexity.ProjectRole.ProjectID == nil {
 			break
@@ -2121,6 +2484,20 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.ProjectRole.RoleCode(childComplexity), true
+
+	case "ProjectTaskMapping.projectID":
+		if e.complexity.ProjectTaskMapping.ProjectID == nil {
+			break
+		}
+
+		return e.complexity.ProjectTaskMapping.ProjectID(childComplexity), true
+
+	case "ProjectTaskMapping.taskID":
+		if e.complexity.ProjectTaskMapping.TaskID == nil {
+			break
+		}
+
+		return e.complexity.ProjectTaskMapping.TaskID(childComplexity), true
 
 	case "Query.findProject":
 		if e.complexity.Query.FindProject == nil {
@@ -2170,6 +2547,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.FindUser(childComplexity, args["input"].(FindUser)), true
 
+	case "Query.hasUnreadNotifications":
+		if e.complexity.Query.HasUnreadNotifications == nil {
+			break
+		}
+
+		return e.complexity.Query.HasUnreadNotifications(childComplexity), true
+
 	case "Query.invitedUsers":
 		if e.complexity.Query.InvitedUsers == nil {
 			break
@@ -2191,12 +2575,36 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.Me(childComplexity), true
 
+	case "Query.myTasks":
+		if e.complexity.Query.MyTasks == nil {
+			break
+		}
+
+		args, err := ec.field_Query_myTasks_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.MyTasks(childComplexity, args["input"].(MyTasks)), true
+
 	case "Query.notifications":
 		if e.complexity.Query.Notifications == nil {
 			break
 		}
 
 		return e.complexity.Query.Notifications(childComplexity), true
+
+	case "Query.notified":
+		if e.complexity.Query.Notified == nil {
+			break
+		}
+
+		args, err := ec.field_Query_notified_args(context.TODO(), rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.Notified(childComplexity, args["input"].(NotifiedInput)), true
 
 	case "Query.organizations":
 		if e.complexity.Query.Organizations == nil {
@@ -2250,34 +2658,6 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Query.Users(childComplexity), true
 
-	case "RefreshToken.createdAt":
-		if e.complexity.RefreshToken.CreatedAt == nil {
-			break
-		}
-
-		return e.complexity.RefreshToken.CreatedAt(childComplexity), true
-
-	case "RefreshToken.expiresAt":
-		if e.complexity.RefreshToken.ExpiresAt == nil {
-			break
-		}
-
-		return e.complexity.RefreshToken.ExpiresAt(childComplexity), true
-
-	case "RefreshToken.id":
-		if e.complexity.RefreshToken.ID == nil {
-			break
-		}
-
-		return e.complexity.RefreshToken.ID(childComplexity), true
-
-	case "RefreshToken.userId":
-		if e.complexity.RefreshToken.UserID == nil {
-			break
-		}
-
-		return e.complexity.RefreshToken.UserID(childComplexity), true
-
 	case "Role.code":
 		if e.complexity.Role.Code == nil {
 			break
@@ -2305,6 +2685,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.SortTaskGroupPayload.Tasks(childComplexity), true
+
+	case "Subscription.notificationAdded":
+		if e.complexity.Subscription.NotificationAdded == nil {
+			break
+		}
+
+		return e.complexity.Subscription.NotificationAdded(childComplexity), true
 
 	case "Task.activity":
 		if e.complexity.Task.Activity == nil {
@@ -2376,6 +2763,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Task.DueDate(childComplexity), true
 
+	case "Task.hasTime":
+		if e.complexity.Task.HasTime == nil {
+			break
+		}
+
+		return e.complexity.Task.HasTime(childComplexity), true
+
 	case "Task.id":
 		if e.complexity.Task.ID == nil {
 			break
@@ -2404,12 +2798,26 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Task.Position(childComplexity), true
 
+	case "Task.shortId":
+		if e.complexity.Task.ShortID == nil {
+			break
+		}
+
+		return e.complexity.Task.ShortID(childComplexity), true
+
 	case "Task.taskGroup":
 		if e.complexity.Task.TaskGroup == nil {
 			break
 		}
 
 		return e.complexity.Task.TaskGroup(childComplexity), true
+
+	case "Task.watched":
+		if e.complexity.Task.Watched == nil {
+			break
+		}
+
+		return e.complexity.Task.Watched(childComplexity), true
 
 	case "TaskActivity.causedBy":
 		if e.complexity.TaskActivity.CausedBy == nil {
@@ -2466,6 +2874,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.TaskBadges.Checklist(childComplexity), true
+
+	case "TaskBadges.comments":
+		if e.complexity.TaskBadges.Comments == nil {
+			break
+		}
+
+		return e.complexity.TaskBadges.Comments(childComplexity), true
 
 	case "TaskChecklist.id":
 		if e.complexity.TaskChecklist.ID == nil {
@@ -2670,6 +3085,27 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Team.Name(childComplexity), true
 
+	case "Team.permission":
+		if e.complexity.Team.Permission == nil {
+			break
+		}
+
+		return e.complexity.Team.Permission(childComplexity), true
+
+	case "TeamPermission.org":
+		if e.complexity.TeamPermission.Org == nil {
+			break
+		}
+
+		return e.complexity.TeamPermission.Org(childComplexity), true
+
+	case "TeamPermission.team":
+		if e.complexity.TeamPermission.Team == nil {
+			break
+		}
+
+		return e.complexity.TeamPermission.Team(childComplexity), true
+
 	case "TeamRole.roleCode":
 		if e.complexity.TeamRole.RoleCode == nil {
 			break
@@ -2683,6 +3119,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.TeamRole.TeamID(childComplexity), true
+
+	case "ToggleProjectVisibilityPayload.project":
+		if e.complexity.ToggleProjectVisibilityPayload.Project == nil {
+			break
+		}
+
+		return e.complexity.ToggleProjectVisibilityPayload.Project(childComplexity), true
 
 	case "ToggleTaskLabelPayload.active":
 		if e.complexity.ToggleTaskLabelPayload.Active == nil {
@@ -2753,6 +3196,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 		}
 
 		return e.complexity.UpdateTaskCommentPayload.TaskID(childComplexity), true
+
+	case "UpdateTaskDueDateNotificationsResult.notifications":
+		if e.complexity.UpdateTaskDueDateNotificationsResult.Notifications == nil {
+			break
+		}
+
+		return e.complexity.UpdateTaskDueDateNotificationsResult.Notifications(childComplexity), true
 
 	case "UpdateTaskLocationPayload.previousTaskGroupID":
 		if e.complexity.UpdateTaskLocationPayload.PreviousTaskGroupID == nil {
@@ -2932,6 +3382,23 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 				Data: buf.Bytes(),
 			}
 		}
+	case ast.Subscription:
+		next := ec._Subscription(ctx, rc.Operation.SelectionSet)
+
+		var buf bytes.Buffer
+		return func(ctx context.Context) *graphql.Response {
+			buf.Reset()
+			data := next()
+
+			if data == nil {
+				return nil
+			}
+			data.MarshalGQL(&buf)
+
+			return &graphql.Response{
+				Data: buf.Bytes(),
+			}
+		}
 
 	default:
 		return graphql.OneShot(graphql.ErrorResponse(ctx, "unsupported GraphQL operation"))
@@ -2958,15 +3425,118 @@ func (ec *executionContext) introspectType(name string) (*introspection.Type, er
 }
 
 var sources = []*ast.Source{
-	&ast.Source{Name: "internal/graph/schema.graphqls", Input: `scalar Time
-scalar UUID
-scalar Upload
+	{Name: "internal/graph/schema/notification.gql", Input: `extend type Subscription {
+    notificationAdded: Notified!
+}
 
-enum RoleCode {
-  owner
-  admin
-  member
-  observer
+extend type Query {
+  notifications: [Notified!]!
+  notified(input: NotifiedInput!): NotifiedResult!
+  hasUnreadNotifications: HasUnreadNotificationsResult!
+}
+
+extend type Mutation {
+  notificationToggleRead(input: NotificationToggleReadInput!): Notified!
+  notificationMarkAllRead: NotificationMarkAllAsReadResult!
+}
+type NotificationMarkAllAsReadResult {
+  success: Boolean!
+}
+
+type HasUnreadNotificationsResult {
+  unread: Boolean!
+}
+input NotificationToggleReadInput {
+  notifiedID: UUID!
+}
+
+input NotifiedInput {
+  limit: Int!
+  cursor: String
+  filter: NotificationFilter!
+}
+
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type NotifiedResult {
+  totalCount: Int!
+  notified: [Notified!]!
+  pageInfo: PageInfo!
+}
+
+enum ActionType {
+  TEAM_ADDED
+  TEAM_REMOVED
+  PROJECT_ADDED
+  PROJECT_REMOVED
+  PROJECT_ARCHIVED
+  DUE_DATE_ADDED
+  DUE_DATE_REMOVED
+  DUE_DATE_CHANGED
+  DUE_DATE_REMINDER
+  TASK_ASSIGNED
+  TASK_MOVED
+  TASK_ARCHIVED
+  TASK_ATTACHMENT_UPLOADED
+  COMMENT_MENTIONED
+  COMMENT_OTHER
+}
+
+enum NotificationFilter {
+  ALL
+  UNREAD
+  ASSIGNED
+  MENTIONED
+}
+
+type NotificationData {
+  key: String!
+  value: String!
+}
+
+type NotificationCausedBy {
+  fullname: String!
+  username: String!
+  id: ID!
+}
+
+type Notification {
+  id: ID!
+  actionType: ActionType!
+  causedBy: NotificationCausedBy
+  data: [NotificationData!]!
+  createdAt: Time!
+}
+
+type Notified {
+  id: ID!
+  notification: Notification!
+  read: Boolean!
+  readAt: Time
+}
+
+`, BuiltIn: false},
+	{Name: "internal/graph/schema/project.gql", Input: `type ProjectPermission {
+  team: RoleCode!
+  project: RoleCode!
+  org: RoleCode!
+}
+
+type Project {
+  id: ID!
+  shortId: String!
+  createdAt: Time!
+  name: String!
+  team: Team
+  taskGroups: [TaskGroup!]!
+  members: [Member!]!
+  invitedMembers: [InvitedMember!]!
+  publicOn: Time
+  permission: ProjectPermission!
+  labels: [ProjectLabel!]!
 }
 
 type ProjectLabel {
@@ -2983,23 +3553,6 @@ type LabelColor {
   colorHex: String!
 }
 
-type TaskLabel {
-  id: ID!
-  projectLabel: ProjectLabel!
-  assignedDate: Time!
-}
-
-type ProfileIcon {
-  url: String
-  initials: String
-  bgColor: String
-}
-
-type OwnersList  {
-  projects: [UUID!]!
-  teams: [UUID!]!
-}
-
 type Member {
   id: ID!
   role: Role!
@@ -3010,321 +3563,9 @@ type Member {
   member: MemberList!
 }
 
-type RefreshToken {
-  id: ID!
-  userId: UUID!
-  expiresAt: Time!
-  createdAt: Time!
-}
-
-type Role {
-  code: String!
-  name: String!
-}
-
-type OwnedList {
-  teams: [Team!]!
-  projects: [Project!]!
-}
-
-type MemberList {
-  teams: [Team!]!
-  projects: [Project!]!
-}
-
-type UserAccount {
-  id: ID!
-  email: String!
-  createdAt: Time!
-  fullName: String!
-  initials: String!
-  bio: String!
-  role: Role!
-  username: String!
-  profileIcon: ProfileIcon!
-  owned: OwnedList!
-  member: MemberList!
-}
-
-type InvitedUserAccount {
-  id: ID!
-  email: String!
-  invitedOn: Time!
-  member: MemberList!
-}
-
-type Team {
-  id: ID!
-  createdAt: Time!
-  name: String!
-  members: [Member!]!
-}
-
-
 type InvitedMember {
   email: String!
   invitedOn: Time!
-}
-
-type Project {
-  id: ID!
-  createdAt: Time!
-  name: String!
-  team: Team
-  taskGroups: [TaskGroup!]!
-  members: [Member!]!
-  invitedMembers: [InvitedMember!]!
-  labels: [ProjectLabel!]!
-}
-
-type TaskGroup {
-  id: ID!
-  projectID: String!
-  createdAt: Time!
-  name: String!
-  position: Float!
-  tasks: [Task!]!
-}
-
-type ChecklistBadge {
-  complete: Int!
-  total: Int!
-}
-
-type TaskBadges {
-  checklist: ChecklistBadge
-}
-
-type CausedBy {
-  id: ID!
-  fullName: String!
-  profileIcon: ProfileIcon
-}
-
-type TaskActivityData {
-  name: String!
-  value: String!
-}
-
-enum ActivityType {
-  TASK_ADDED
-  TASK_MOVED
-  TASK_MARKED_COMPLETE
-  TASK_MARKED_INCOMPLETE
-  TASK_DUE_DATE_CHANGED
-  TASK_DUE_DATE_ADDED
-  TASK_DUE_DATE_REMOVED
-  TASK_CHECKLIST_CHANGED
-  TASK_CHECKLIST_ADDED
-  TASK_CHECKLIST_REMOVED
-}
-
-type TaskActivity {
-  id: ID!
-  type: ActivityType!
-  data: [TaskActivityData!]!
-  causedBy: CausedBy!
-  createdAt: Time!
-}
-
-type Task {
-  id: ID!
-  taskGroup: TaskGroup!
-  createdAt: Time!
-  name: String!
-  position: Float!
-  description: String
-  dueDate: Time
-  complete: Boolean!
-  completedAt: Time
-  assigned: [Member!]!
-  labels: [TaskLabel!]!
-  checklists: [TaskChecklist!]!
-  badges: TaskBadges!
-  activity: [TaskActivity!]!
-  comments: [TaskComment!]!
-}
-
-type CreatedBy {
-  id: ID!
-  fullName: String!
-  profileIcon: ProfileIcon!
-}
-
-type TaskComment {
-  id: ID!
-  createdAt: Time!
-  updatedAt: Time
-  message: String!
-  createdBy: CreatedBy!
-  pinned: Boolean!
-}
-
-type Organization {
-  id: ID!
-  name: String!
-}
-
-type TaskChecklistItem {
-  id: ID!
-  name: String!
-  taskChecklistID: UUID!
-  complete: Boolean!
-  position: Float!
-  dueDate: Time!
-}
-
-type TaskChecklist {
-  id: ID!
-  name: String!
-  position: Float!
-  items: [TaskChecklistItem!]!
-}
-
-enum ShareStatus {
-  INVITED
-  JOINED
-}
-
-enum RoleLevel {
-  ADMIN
-  MEMBER
-}
-
-enum ActionLevel {
-  ORG
-  TEAM
-  PROJECT
-}
-
-enum ObjectType {
-  ORG
-  TEAM
-  PROJECT
-  TASK
-  TASK_GROUP
-  TASK_CHECKLIST
-  TASK_CHECKLIST_ITEM
-}
-
-directive @hasRole(roles: [RoleLevel!]!, level: ActionLevel!, type: ObjectType!) on FIELD_DEFINITION
-
-type Query {
-  organizations: [Organization!]!
-  users: [UserAccount!]!
-  invitedUsers: [InvitedUserAccount!]!
-  findUser(input: FindUser!): UserAccount!
-  findProject(input: FindProject!):
-    Project! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: PROJECT)
-  findTask(input: FindTask!): Task!
-  projects(input: ProjectsFilter): [Project!]!
-  findTeam(input: FindTeam!): Team!
-  teams: [Team!]!
-  labelColors: [LabelColor!]!
-  taskGroups: [TaskGroup!]!
-  me: MePayload!
-}
-
-type Mutation
-
-type TeamRole {
-  teamID: UUID!
-  roleCode: RoleCode!
-}
-
-type ProjectRole {
-  projectID: UUID!
-  roleCode: RoleCode!
-}
-
-type MePayload {
-  user: UserAccount!
-  teamRoles: [TeamRole!]!
-  projectRoles: [ProjectRole!]!
-}
-
-input ProjectsFilter {
-  teamID: UUID
-}
-
-input FindUser {
-  userID: UUID!
-}
-
-input FindProject {
-  projectID: UUID!
-}
-
-input FindTask {
-  taskID: UUID!
-}
-
-input FindTeam {
-  teamID: UUID!
-}
-
-extend type Query {
-  notifications: [Notification!]!
-}
-
-enum EntityType {
-  TASK
-}
-
-enum ActorType {
-  USER
-}
-
-enum ActionType {
-  TASK_MEMBER_ADDED
-}
-
-type NotificationActor {
-  id: UUID!
-  type: ActorType!
-  name: String!
-}
-
-type NotificationEntity {
-  id: UUID!
-  type: EntityType!
-  name: String!
-}
-
-type Notification {
-  id: ID!
-  entity: NotificationEntity!
-  actionType: ActionType!
-  actor: NotificationActor!
-  read: Boolean!
-  createdAt: Time!
-}
-
-extend type Mutation {
-  createProject(input: NewProject!): Project! @hasRole(roles: [ADMIN], level: TEAM, type: TEAM)
-  deleteProject(input: DeleteProject!):
-    DeleteProjectPayload! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
-  updateProjectName(input: UpdateProjectName):
-    Project! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
-}
-
-input NewProject {
-  teamID: UUID
-  name: String!
-}
-
-input UpdateProjectName {
-  projectID: UUID!
-  name: String!
-}
-
-input DeleteProject {
-  projectID: UUID!
-}
-
-type DeleteProjectPayload {
-  ok: Boolean!
-  project: Project!
 }
 
 extend type Mutation {
@@ -3374,8 +3615,8 @@ extend type Mutation {
   updateProjectMemberRole(input: UpdateProjectMemberRole!):
     UpdateProjectMemberRolePayload! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
 
-deleteInvitedProjectMember(input: DeleteInvitedProjectMember!):
-  DeleteInvitedProjectMemberPayload! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
+  deleteInvitedProjectMember(input: DeleteInvitedProjectMember!):
+    DeleteInvitedProjectMemberPayload! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
 }
 
 input DeleteInvitedProjectMember {
@@ -3426,82 +3667,328 @@ type UpdateProjectMemberRolePayload {
   member: Member!
 }
 
+extend type Query {
+  findProject(input: FindProject!): Project!
+}
+
+input FindProject {
+  projectID: UUID
+  projectShortID: String
+}
+
 extend type Mutation {
-  createTask(input: NewTask!):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK_GROUP)
-  deleteTask(input: DeleteTaskInput!):
-    DeleteTaskPayload! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-
-  updateTaskDescription(input: UpdateTaskDescriptionInput!):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-  updateTaskLocation(input: NewTaskLocation!):
-    UpdateTaskLocationPayload! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-  updateTaskName(input: UpdateTaskName!):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-  setTaskComplete(input: SetTaskComplete!):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-  updateTaskDueDate(input: UpdateTaskDueDate!):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-
-  assignTask(input: AssignTaskInput):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
-  unassignTask(input: UnassignTaskInput):
-    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  createProject(input: NewProject!): Project! @hasRole(roles: [ADMIN], level: TEAM, type: TEAM)
+  deleteProject(input: DeleteProject!):
+    DeleteProjectPayload! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
+  updateProjectName(input: UpdateProjectName):
+    Project! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
+  toggleProjectVisibility(input: ToggleProjectVisibility!): ToggleProjectVisibilityPayload! @hasRole(roles: [ADMIN], level: PROJECT, type: PROJECT)
 }
 
-input NewTask {
-  taskGroupID: UUID!
+input ToggleProjectVisibility {
+  projectID: UUID!
+  isPublic: Boolean!
+}
+
+type ToggleProjectVisibilityPayload {
+  project: Project!
+}
+
+input NewProject {
+  teamID: UUID
+  name: String!
+}
+
+input UpdateProjectName {
+  projectID: UUID!
+  name: String!
+}
+
+input DeleteProject {
+  projectID: UUID!
+}
+
+type DeleteProjectPayload {
+  ok: Boolean!
+  project: Project!
+}
+
+`, BuiltIn: false},
+	{Name: "internal/graph/schema/schema.gql", Input: `scalar Time
+scalar UUID
+scalar Upload
+
+enum RoleCode {
+  owner
+  admin
+  member
+  observer
+}
+
+type Role {
+  code: String!
+  name: String!
+}
+
+type ProfileIcon {
+  url: String
+  initials: String
+  bgColor: String
+}
+
+type OwnersList  {
+  projects: [UUID!]!
+  teams: [UUID!]!
+}
+
+type OwnedList {
+  teams: [Team!]!
+  projects: [Project!]!
+}
+
+type MemberList {
+  teams: [Team!]!
+  projects: [Project!]!
+}
+
+type Organization {
+  id: ID!
+  name: String!
+}
+
+enum ShareStatus {
+  INVITED
+  JOINED
+}
+
+enum RoleLevel {
+  ADMIN
+  MEMBER
+}
+
+enum ActionLevel {
+  ORG
+  TEAM
+  PROJECT
+}
+
+enum ObjectType {
+  ORG
+  TEAM
+  PROJECT
+  TASK
+  TASK_GROUP
+  TASK_CHECKLIST
+  TASK_CHECKLIST_ITEM
+}
+
+directive @hasRole(roles: [RoleLevel!]!, level: ActionLevel!, type: ObjectType!) on FIELD_DEFINITION
+
+directive @requiresUser on FIELD_DEFINITION
+
+type Query {
+  organizations: [Organization!]!
+  users: [UserAccount!]!
+  invitedUsers: [InvitedUserAccount!]!
+  findUser(input: FindUser!): UserAccount!
+  projects(input: ProjectsFilter): [Project!]!
+  teams: [Team!]!
+  findTeam(input: FindTeam!): Team!
+  myTasks(input: MyTasks!): MyTasksPayload!
+  labelColors: [LabelColor!]!
+  taskGroups: [TaskGroup!]!
+  me: MePayload
+}
+
+
+type Subscription
+type Mutation
+
+enum MyTasksStatus {
+  ALL
+  INCOMPLETE
+  COMPLETE_ALL
+  COMPLETE_TODAY
+  COMPLETE_YESTERDAY
+  COMPLETE_ONE_WEEK
+  COMPLETE_TWO_WEEK
+  COMPLETE_THREE_WEEK
+}
+
+enum MyTasksSort {
+  NONE
+  PROJECT
+  DUE_DATE
+}
+
+input MyTasks {
+  status: MyTasksStatus!
+  sort: MyTasksSort!
+}
+
+type ProjectTaskMapping {
+  projectID: UUID!
+  taskID: UUID!
+}
+
+type MyTasksPayload {
+  tasks: [Task!]!
+  projects: [ProjectTaskMapping!]!
+}
+
+type TeamRole {
+  teamID: UUID!
+  roleCode: RoleCode!
+}
+
+type ProjectRole {
+  projectID: UUID!
+  roleCode: RoleCode!
+}
+
+type MePayload {
+  user: UserAccount!
+  organization: RoleCode
+  teamRoles: [TeamRole!]!
+  projectRoles: [ProjectRole!]!
+}
+
+input ProjectsFilter {
+  teamID: UUID
+}
+
+input FindUser {
+  userID: UUID!
+}
+
+
+input FindTeam {
+  teamID: UUID!
+}
+`, BuiltIn: false},
+	{Name: "internal/graph/schema/task.gql", Input: `enum DueDateNotificationDuration {
+  MINUTE
+  HOUR
+  DAY
+  WEEK
+}
+
+type TaskLabel {
+  id: ID!
+  projectLabel: ProjectLabel!
+  assignedDate: Time!
+}
+
+type ChecklistBadge {
+  complete: Int!
+  total: Int!
+}
+
+type CommentsBadge {
+  total: Int!
+  unread: Boolean!
+}
+
+type TaskBadges {
+  checklist: ChecklistBadge
+  comments: CommentsBadge
+}
+
+type DueDateNotification {
+  id: ID!
+  period: Int!
+  duration: DueDateNotificationDuration!
+}
+
+type DueDate {
+  at: Time
+  notifications: [DueDateNotification!]!
+}
+
+
+type Task {
+  id: ID!
+  shortId: String!
+  taskGroup: TaskGroup!
+  createdAt: Time!
   name: String!
   position: Float!
-}
-
-input AssignTaskInput {
-  taskID: UUID!
-  userID: UUID!
-}
-
-input UnassignTaskInput {
-  taskID: UUID!
-  userID: UUID!
-}
-
-input UpdateTaskDescriptionInput {
-  taskID: UUID!
-  description: String!
-}
-
-type UpdateTaskLocationPayload {
-  previousTaskGroupID: UUID!
-  task: Task!
-}
-
-input UpdateTaskDueDate  {
-  taskID: UUID!
-  dueDate: Time
-}
-
-input SetTaskComplete {
-  taskID: UUID!
+  description: String
+  watched: Boolean!
+  dueDate: DueDate!
+  hasTime: Boolean!
   complete: Boolean!
+  completedAt: Time
+  assigned: [Member!]!
+  labels: [TaskLabel!]!
+  checklists: [TaskChecklist!]!
+  badges: TaskBadges!
+  activity: [TaskActivity!]!
+  comments: [TaskComment!]!
 }
 
-input NewTaskLocation {
-  taskID: UUID!
-  taskGroupID: UUID!
-  position: Float!
-}
-
-input DeleteTaskInput {
-  taskID: UUID!
-}
-
-type DeleteTaskPayload {
-  taskID: UUID!
-}
-
-input UpdateTaskName {
-  taskID: UUID!
+type TaskActivityData {
   name: String!
+  value: String!
+}
+
+enum ActivityType {
+  TASK_ADDED
+  TASK_MOVED
+  TASK_MARKED_COMPLETE
+  TASK_MARKED_INCOMPLETE
+  TASK_DUE_DATE_CHANGED
+  TASK_DUE_DATE_ADDED
+  TASK_DUE_DATE_REMOVED
+  TASK_CHECKLIST_CHANGED
+  TASK_CHECKLIST_ADDED
+  TASK_CHECKLIST_REMOVED
+}
+
+type TaskActivity {
+  id: ID!
+  type: ActivityType!
+  data: [TaskActivityData!]!
+  causedBy: CausedBy!
+  createdAt: Time!
+}
+
+type CausedBy {
+  id: ID!
+  fullName: String!
+  profileIcon: ProfileIcon
+}
+
+
+type CreatedBy {
+  id: ID!
+  fullName: String!
+  profileIcon: ProfileIcon!
+}
+
+type TaskComment {
+  id: ID!
+  createdAt: Time!
+  updatedAt: Time
+  message: String!
+  createdBy: CreatedBy!
+  pinned: Boolean!
+}
+
+type TaskChecklistItem {
+  id: ID!
+  name: String!
+  taskChecklistID: UUID!
+  complete: Boolean!
+  position: Float!
+  dueDate: Time!
+}
+
+type TaskChecklist {
+  id: ID!
+  name: String!
+  position: Float!
+  items: [TaskChecklistItem!]!
 }
 
 extend type Mutation {
@@ -3737,26 +4224,162 @@ type ToggleTaskLabelPayload {
   task: Task!
 }
 
+extend type Query {
+  findTask(input: FindTask!): Task!
+}
+
+input FindTask {
+  taskID: UUID
+  taskShortID: String
+}
+
+
 extend type Mutation {
-  deleteTeam(input: DeleteTeam!):
-    DeleteTeamPayload! @hasRole(roles:[ ADMIN], level: TEAM, type: TEAM)
-  createTeam(input: NewTeam!):
-    Team! @hasRole(roles: [ADMIN], level: ORG, type: ORG)
+  createTask(input: NewTask!):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK_GROUP)
+  deleteTask(input: DeleteTaskInput!):
+    DeleteTaskPayload! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+
+  updateTaskDescription(input: UpdateTaskDescriptionInput!):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  updateTaskLocation(input: NewTaskLocation!):
+    UpdateTaskLocationPayload! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  updateTaskName(input: UpdateTaskName!):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  setTaskComplete(input: SetTaskComplete!):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  updateTaskDueDate(input: UpdateTaskDueDate!):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  toggleTaskWatch(input: ToggleTaskWatch!):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+
+  assignTask(input: AssignTaskInput):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+  unassignTask(input: UnassignTaskInput):
+    Task! @hasRole(roles: [ADMIN, MEMBER], level: PROJECT, type: TASK)
+
+
+  createTaskDueDateNotifications(input: [CreateTaskDueDateNotification!]!):
+    CreateTaskDueDateNotificationsResult!
+  updateTaskDueDateNotifications(input: [UpdateTaskDueDateNotification!]!):
+    UpdateTaskDueDateNotificationsResult!
+  deleteTaskDueDateNotifications(input: [DeleteTaskDueDateNotification!]!):
+    DeleteTaskDueDateNotificationsResult!
 }
 
-input NewTeam {
+input DeleteTaskDueDateNotification {
+  id: UUID!
+}
+
+type DeleteTaskDueDateNotificationsResult {
+  notifications: [UUID!]!
+}
+
+input UpdateTaskDueDateNotification {
+  id: UUID!
+  period: Int!
+  duration: DueDateNotificationDuration!
+}
+
+type UpdateTaskDueDateNotificationsResult {
+  notifications: [DueDateNotification!]!
+}
+
+input CreateTaskDueDateNotification {
+  taskID: UUID!
+  period: Int!
+  duration: DueDateNotificationDuration!
+}
+
+type CreateTaskDueDateNotificationsResult {
+  notifications: [DueDateNotification!]!
+}
+
+
+input ToggleTaskWatch {
+  taskID: UUID!
+}
+
+input NewTask {
+  taskGroupID: UUID!
   name: String!
-  organizationID: UUID!
+  position: Float!
+  assigned: [UUID!]
 }
 
-input DeleteTeam {
-  teamID: UUID!
+input AssignTaskInput {
+  taskID: UUID!
+  userID: UUID!
 }
 
-type DeleteTeamPayload {
-  ok: Boolean!
-  team: Team!
-  projects: [Project!]!
+input UnassignTaskInput {
+  taskID: UUID!
+  userID: UUID!
+}
+
+input UpdateTaskDescriptionInput {
+  taskID: UUID!
+  description: String!
+}
+
+type UpdateTaskLocationPayload {
+  previousTaskGroupID: UUID!
+  task: Task!
+}
+
+input UpdateTaskDueDate  {
+  taskID: UUID!
+  hasTime: Boolean!
+  dueDate: Time
+}
+
+input SetTaskComplete {
+  taskID: UUID!
+  complete: Boolean!
+}
+
+input NewTaskLocation {
+  taskID: UUID!
+  taskGroupID: UUID!
+  position: Float!
+}
+
+input DeleteTaskInput {
+  taskID: UUID!
+}
+
+type DeleteTaskPayload {
+  taskID: UUID!
+}
+
+input UpdateTaskName {
+  taskID: UUID!
+  name: String!
+}
+
+`, BuiltIn: false},
+	{Name: "internal/graph/schema/taskList.gql", Input: `type TaskGroup {
+  id: ID!
+  projectID: String!
+  createdAt: Time!
+  name: String!
+  position: Float!
+  tasks: [Task!]!
+}
+
+
+`, BuiltIn: false},
+	{Name: "internal/graph/schema/team.gql", Input: `type Team {
+  id: ID!
+  createdAt: Time!
+  name: String!
+  permission: TeamPermission!
+  members: [Member!]!
+}
+
+type TeamPermission {
+  team: RoleCode!
+  org: RoleCode!
 }
 
 extend type Mutation {
@@ -3804,7 +4427,50 @@ type UpdateTeamMemberRolePayload {
 }
 
 extend type Mutation {
-  createRefreshToken(input: NewRefreshToken!): RefreshToken!
+  deleteTeam(input: DeleteTeam!):
+    DeleteTeamPayload! @hasRole(roles:[ ADMIN], level: TEAM, type: TEAM)
+  createTeam(input: NewTeam!):
+    Team! @hasRole(roles: [ADMIN], level: ORG, type: ORG)
+}
+
+input NewTeam {
+  name: String!
+  organizationID: UUID!
+}
+
+input DeleteTeam {
+  teamID: UUID!
+}
+
+type DeleteTeamPayload {
+  ok: Boolean!
+  team: Team!
+  projects: [Project!]!
+}
+
+`, BuiltIn: false},
+	{Name: "internal/graph/schema/user.gql", Input: `type UserAccount {
+  id: ID!
+  email: String!
+  createdAt: Time!
+  fullName: String!
+  initials: String!
+  bio: String!
+  role: Role!
+  username: String!
+  profileIcon: ProfileIcon!
+  owned: OwnedList!
+  member: MemberList!
+}
+
+type InvitedUserAccount {
+  id: ID!
+  email: String!
+  invitedOn: Time!
+  member: MemberList!
+}
+
+extend type Mutation {
   createUserAccount(input: NewUserAccount!):
     UserAccount! @hasRole(roles: [ADMIN], level: ORG, type: ORG)
   deleteUserAccount(input: DeleteUserAccount!):
@@ -3877,10 +4543,6 @@ type UpdateUserRolePayload {
   user: UserAccount!
 }
 
-input NewRefreshToken {
-  userID: UUID!
-}
-
 input NewUserAccount {
   username: String!
   email: String!
@@ -3917,6 +4579,7 @@ func (ec *executionContext) dir_hasRole_args(ctx context.Context, rawArgs map[st
 	args := map[string]interface{}{}
 	var arg0 []RoleLevel
 	if tmp, ok := rawArgs["roles"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("roles"))
 		arg0, err = ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -3925,6 +4588,7 @@ func (ec *executionContext) dir_hasRole_args(ctx context.Context, rawArgs map[st
 	args["roles"] = arg0
 	var arg1 ActionLevel
 	if tmp, ok := rawArgs["level"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("level"))
 		arg1, err = ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -3933,6 +4597,7 @@ func (ec *executionContext) dir_hasRole_args(ctx context.Context, rawArgs map[st
 	args["level"] = arg1
 	var arg2 ObjectType
 	if tmp, ok := rawArgs["type"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("type"))
 		arg2, err = ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -3947,6 +4612,7 @@ func (ec *executionContext) field_Mutation_addTaskLabel_args(ctx context.Context
 	args := map[string]interface{}{}
 	var arg0 *AddTaskLabelInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOAddTaskLabelInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAddTaskLabelInput(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -3961,6 +4627,7 @@ func (ec *executionContext) field_Mutation_assignTask_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 *AssignTaskInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOAssignTaskInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAssignTaskInput(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -3975,6 +4642,7 @@ func (ec *executionContext) field_Mutation_createProjectLabel_args(ctx context.C
 	args := map[string]interface{}{}
 	var arg0 NewProjectLabel
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewProjectLabel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewProjectLabel(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -3989,21 +4657,8 @@ func (ec *executionContext) field_Mutation_createProject_args(ctx context.Contex
 	args := map[string]interface{}{}
 	var arg0 NewProject
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewProject2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewProject(ctx, tmp)
-		if err != nil {
-			return nil, err
-		}
-	}
-	args["input"] = arg0
-	return args, nil
-}
-
-func (ec *executionContext) field_Mutation_createRefreshToken_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
-	var err error
-	args := map[string]interface{}{}
-	var arg0 NewRefreshToken
-	if tmp, ok := rawArgs["input"]; ok {
-		arg0, err = ec.unmarshalNNewRefreshToken2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewRefreshToken(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4017,6 +4672,7 @@ func (ec *executionContext) field_Mutation_createTaskChecklistItem_args(ctx cont
 	args := map[string]interface{}{}
 	var arg0 CreateTaskChecklistItem
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNCreateTaskChecklistItem2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskChecklistItem(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4031,6 +4687,7 @@ func (ec *executionContext) field_Mutation_createTaskChecklist_args(ctx context.
 	args := map[string]interface{}{}
 	var arg0 CreateTaskChecklist
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNCreateTaskChecklist2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskChecklist(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4045,7 +4702,23 @@ func (ec *executionContext) field_Mutation_createTaskComment_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 *CreateTaskComment
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOCreateTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskComment(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_createTaskDueDateNotifications_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 []CreateTaskDueDateNotification
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNCreateTaskDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotificationᚄ(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4059,6 +4732,7 @@ func (ec *executionContext) field_Mutation_createTaskGroup_args(ctx context.Cont
 	args := map[string]interface{}{}
 	var arg0 NewTaskGroup
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewTaskGroup2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTaskGroup(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4073,6 +4747,7 @@ func (ec *executionContext) field_Mutation_createTask_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 NewTask
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewTask2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTask(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4087,6 +4762,7 @@ func (ec *executionContext) field_Mutation_createTeamMember_args(ctx context.Con
 	args := map[string]interface{}{}
 	var arg0 CreateTeamMember
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNCreateTeamMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTeamMember(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4101,6 +4777,7 @@ func (ec *executionContext) field_Mutation_createTeam_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 NewTeam
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTeam(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4115,6 +4792,7 @@ func (ec *executionContext) field_Mutation_createUserAccount_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 NewUserAccount
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewUserAccount(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4129,6 +4807,7 @@ func (ec *executionContext) field_Mutation_deleteInvitedProjectMember_args(ctx c
 	args := map[string]interface{}{}
 	var arg0 DeleteInvitedProjectMember
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteInvitedProjectMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedProjectMember(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4143,6 +4822,7 @@ func (ec *executionContext) field_Mutation_deleteInvitedUserAccount_args(ctx con
 	args := map[string]interface{}{}
 	var arg0 DeleteInvitedUserAccount
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteInvitedUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedUserAccount(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4157,6 +4837,7 @@ func (ec *executionContext) field_Mutation_deleteProjectLabel_args(ctx context.C
 	args := map[string]interface{}{}
 	var arg0 DeleteProjectLabel
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteProjectLabel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectLabel(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4171,6 +4852,7 @@ func (ec *executionContext) field_Mutation_deleteProjectMember_args(ctx context.
 	args := map[string]interface{}{}
 	var arg0 DeleteProjectMember
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteProjectMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectMember(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4185,6 +4867,7 @@ func (ec *executionContext) field_Mutation_deleteProject_args(ctx context.Contex
 	args := map[string]interface{}{}
 	var arg0 DeleteProject
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteProject2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProject(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4199,6 +4882,7 @@ func (ec *executionContext) field_Mutation_deleteTaskChecklistItem_args(ctx cont
 	args := map[string]interface{}{}
 	var arg0 DeleteTaskChecklistItem
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTaskChecklistItem2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskChecklistItem(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4213,6 +4897,7 @@ func (ec *executionContext) field_Mutation_deleteTaskChecklist_args(ctx context.
 	args := map[string]interface{}{}
 	var arg0 DeleteTaskChecklist
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTaskChecklist2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskChecklist(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4227,7 +4912,23 @@ func (ec *executionContext) field_Mutation_deleteTaskComment_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 *DeleteTaskComment
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalODeleteTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskComment(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_deleteTaskDueDateNotifications_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 []DeleteTaskDueDateNotification
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNDeleteTaskDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotificationᚄ(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4241,6 +4942,7 @@ func (ec *executionContext) field_Mutation_deleteTaskGroupTasks_args(ctx context
 	args := map[string]interface{}{}
 	var arg0 DeleteTaskGroupTasks
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTaskGroupTasks2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskGroupTasks(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4255,6 +4957,7 @@ func (ec *executionContext) field_Mutation_deleteTaskGroup_args(ctx context.Cont
 	args := map[string]interface{}{}
 	var arg0 DeleteTaskGroupInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTaskGroupInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskGroupInput(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4269,6 +4972,7 @@ func (ec *executionContext) field_Mutation_deleteTask_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 DeleteTaskInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTaskInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskInput(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4283,6 +4987,7 @@ func (ec *executionContext) field_Mutation_deleteTeamMember_args(ctx context.Con
 	args := map[string]interface{}{}
 	var arg0 DeleteTeamMember
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTeamMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeamMember(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4297,6 +5002,7 @@ func (ec *executionContext) field_Mutation_deleteTeam_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 DeleteTeam
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeam(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4311,6 +5017,7 @@ func (ec *executionContext) field_Mutation_deleteUserAccount_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 DeleteUserAccount
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDeleteUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteUserAccount(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4325,6 +5032,7 @@ func (ec *executionContext) field_Mutation_duplicateTaskGroup_args(ctx context.C
 	args := map[string]interface{}{}
 	var arg0 DuplicateTaskGroup
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNDuplicateTaskGroup2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDuplicateTaskGroup(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4339,6 +5047,7 @@ func (ec *executionContext) field_Mutation_inviteProjectMembers_args(ctx context
 	args := map[string]interface{}{}
 	var arg0 InviteProjectMembers
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNInviteProjectMembers2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐInviteProjectMembers(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4353,7 +5062,23 @@ func (ec *executionContext) field_Mutation_logoutUser_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 LogoutUser
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNLogoutUser2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐLogoutUser(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_notificationToggleRead_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 NotificationToggleReadInput
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNNotificationToggleReadInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationToggleReadInput(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4367,6 +5092,7 @@ func (ec *executionContext) field_Mutation_removeTaskLabel_args(ctx context.Cont
 	args := map[string]interface{}{}
 	var arg0 *RemoveTaskLabelInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalORemoveTaskLabelInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRemoveTaskLabelInput(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4381,6 +5107,7 @@ func (ec *executionContext) field_Mutation_setTaskChecklistItemComplete_args(ctx
 	args := map[string]interface{}{}
 	var arg0 SetTaskChecklistItemComplete
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNSetTaskChecklistItemComplete2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSetTaskChecklistItemComplete(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4395,6 +5122,7 @@ func (ec *executionContext) field_Mutation_setTaskComplete_args(ctx context.Cont
 	args := map[string]interface{}{}
 	var arg0 SetTaskComplete
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNSetTaskComplete2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSetTaskComplete(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4409,7 +5137,23 @@ func (ec *executionContext) field_Mutation_sortTaskGroup_args(ctx context.Contex
 	args := map[string]interface{}{}
 	var arg0 SortTaskGroup
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNSortTaskGroup2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSortTaskGroup(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_toggleProjectVisibility_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 ToggleProjectVisibility
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNToggleProjectVisibility2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleProjectVisibility(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4423,7 +5167,23 @@ func (ec *executionContext) field_Mutation_toggleTaskLabel_args(ctx context.Cont
 	args := map[string]interface{}{}
 	var arg0 ToggleTaskLabelInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNToggleTaskLabelInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleTaskLabelInput(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_toggleTaskWatch_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 ToggleTaskWatch
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNToggleTaskWatch2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleTaskWatch(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4437,6 +5197,7 @@ func (ec *executionContext) field_Mutation_unassignTask_args(ctx context.Context
 	args := map[string]interface{}{}
 	var arg0 *UnassignTaskInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOUnassignTaskInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUnassignTaskInput(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4451,6 +5212,7 @@ func (ec *executionContext) field_Mutation_updateProjectLabelColor_args(ctx cont
 	args := map[string]interface{}{}
 	var arg0 UpdateProjectLabelColor
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateProjectLabelColor2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectLabelColor(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4465,6 +5227,7 @@ func (ec *executionContext) field_Mutation_updateProjectLabelName_args(ctx conte
 	args := map[string]interface{}{}
 	var arg0 UpdateProjectLabelName
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateProjectLabelName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectLabelName(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4479,6 +5242,7 @@ func (ec *executionContext) field_Mutation_updateProjectLabel_args(ctx context.C
 	args := map[string]interface{}{}
 	var arg0 UpdateProjectLabel
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateProjectLabel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectLabel(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4493,6 +5257,7 @@ func (ec *executionContext) field_Mutation_updateProjectMemberRole_args(ctx cont
 	args := map[string]interface{}{}
 	var arg0 UpdateProjectMemberRole
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateProjectMemberRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectMemberRole(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4507,6 +5272,7 @@ func (ec *executionContext) field_Mutation_updateProjectName_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 *UpdateProjectName
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOUpdateProjectName2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectName(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4521,6 +5287,7 @@ func (ec *executionContext) field_Mutation_updateTaskChecklistItemLocation_args(
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskChecklistItemLocation
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskChecklistItemLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistItemLocation(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4535,6 +5302,7 @@ func (ec *executionContext) field_Mutation_updateTaskChecklistItemName_args(ctx 
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskChecklistItemName
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskChecklistItemName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistItemName(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4549,6 +5317,7 @@ func (ec *executionContext) field_Mutation_updateTaskChecklistLocation_args(ctx 
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskChecklistLocation
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskChecklistLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistLocation(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4563,6 +5332,7 @@ func (ec *executionContext) field_Mutation_updateTaskChecklistName_args(ctx cont
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskChecklistName
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskChecklistName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistName(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4577,6 +5347,7 @@ func (ec *executionContext) field_Mutation_updateTaskComment_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 *UpdateTaskComment
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOUpdateTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskComment(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4591,7 +5362,23 @@ func (ec *executionContext) field_Mutation_updateTaskDescription_args(ctx contex
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskDescriptionInput
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskDescriptionInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDescriptionInput(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_updateTaskDueDateNotifications_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 []UpdateTaskDueDateNotification
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNUpdateTaskDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotificationᚄ(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4605,6 +5392,7 @@ func (ec *executionContext) field_Mutation_updateTaskDueDate_args(ctx context.Co
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskDueDate
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskDueDate2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDate(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4619,6 +5407,7 @@ func (ec *executionContext) field_Mutation_updateTaskGroupLocation_args(ctx cont
 	args := map[string]interface{}{}
 	var arg0 NewTaskGroupLocation
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewTaskGroupLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTaskGroupLocation(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4633,6 +5422,7 @@ func (ec *executionContext) field_Mutation_updateTaskGroupName_args(ctx context.
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskGroupName
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskGroupName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskGroupName(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4647,6 +5437,7 @@ func (ec *executionContext) field_Mutation_updateTaskLocation_args(ctx context.C
 	args := map[string]interface{}{}
 	var arg0 NewTaskLocation
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNNewTaskLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTaskLocation(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4661,6 +5452,7 @@ func (ec *executionContext) field_Mutation_updateTaskName_args(ctx context.Conte
 	args := map[string]interface{}{}
 	var arg0 UpdateTaskName
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTaskName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskName(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4675,6 +5467,7 @@ func (ec *executionContext) field_Mutation_updateTeamMemberRole_args(ctx context
 	args := map[string]interface{}{}
 	var arg0 UpdateTeamMemberRole
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateTeamMemberRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTeamMemberRole(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4689,6 +5482,7 @@ func (ec *executionContext) field_Mutation_updateUserInfo_args(ctx context.Conte
 	args := map[string]interface{}{}
 	var arg0 UpdateUserInfo
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateUserInfo2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserInfo(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4703,6 +5497,7 @@ func (ec *executionContext) field_Mutation_updateUserPassword_args(ctx context.C
 	args := map[string]interface{}{}
 	var arg0 UpdateUserPassword
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateUserPassword2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserPassword(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4717,6 +5512,7 @@ func (ec *executionContext) field_Mutation_updateUserRole_args(ctx context.Conte
 	args := map[string]interface{}{}
 	var arg0 UpdateUserRole
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNUpdateUserRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserRole(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4731,6 +5527,7 @@ func (ec *executionContext) field_Query___type_args(ctx context.Context, rawArgs
 	args := map[string]interface{}{}
 	var arg0 string
 	if tmp, ok := rawArgs["name"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 		arg0, err = ec.unmarshalNString2string(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4745,6 +5542,7 @@ func (ec *executionContext) field_Query_findProject_args(ctx context.Context, ra
 	args := map[string]interface{}{}
 	var arg0 FindProject
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNFindProject2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindProject(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4759,6 +5557,7 @@ func (ec *executionContext) field_Query_findTask_args(ctx context.Context, rawAr
 	args := map[string]interface{}{}
 	var arg0 FindTask
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNFindTask2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindTask(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4773,6 +5572,7 @@ func (ec *executionContext) field_Query_findTeam_args(ctx context.Context, rawAr
 	args := map[string]interface{}{}
 	var arg0 FindTeam
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNFindTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindTeam(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4787,7 +5587,38 @@ func (ec *executionContext) field_Query_findUser_args(ctx context.Context, rawAr
 	args := map[string]interface{}{}
 	var arg0 FindUser
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNFindUser2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindUser(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_myTasks_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 MyTasks
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNMyTasks2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasks(ctx, tmp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	args["input"] = arg0
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_notified_args(ctx context.Context, rawArgs map[string]interface{}) (map[string]interface{}, error) {
+	var err error
+	args := map[string]interface{}{}
+	var arg0 NotifiedInput
+	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
+		arg0, err = ec.unmarshalNNotifiedInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedInput(ctx, tmp)
 		if err != nil {
 			return nil, err
 		}
@@ -4801,6 +5632,7 @@ func (ec *executionContext) field_Query_projects_args(ctx context.Context, rawAr
 	args := map[string]interface{}{}
 	var arg0 *ProjectsFilter
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalOProjectsFilter2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectsFilter(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4815,6 +5647,7 @@ func (ec *executionContext) field_Query_searchMembers_args(ctx context.Context, 
 	args := map[string]interface{}{}
 	var arg0 MemberSearchFilter
 	if tmp, ok := rawArgs["input"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("input"))
 		arg0, err = ec.unmarshalNMemberSearchFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberSearchFilter(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4829,6 +5662,7 @@ func (ec *executionContext) field___Type_enumValues_args(ctx context.Context, ra
 	args := map[string]interface{}{}
 	var arg0 bool
 	if tmp, ok := rawArgs["includeDeprecated"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("includeDeprecated"))
 		arg0, err = ec.unmarshalOBoolean2bool(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4843,6 +5677,7 @@ func (ec *executionContext) field___Type_fields_args(ctx context.Context, rawArg
 	args := map[string]interface{}{}
 	var arg0 bool
 	if tmp, ok := rawArgs["includeDeprecated"]; ok {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("includeDeprecated"))
 		arg0, err = ec.unmarshalOBoolean2bool(ctx, tmp)
 		if err != nil {
 			return nil, err
@@ -4868,10 +5703,11 @@ func (ec *executionContext) _CausedBy_id(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CausedBy",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CausedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -4902,10 +5738,11 @@ func (ec *executionContext) _CausedBy_fullName(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CausedBy",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CausedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -4936,10 +5773,11 @@ func (ec *executionContext) _CausedBy_profileIcon(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CausedBy",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CausedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -4967,10 +5805,11 @@ func (ec *executionContext) _ChecklistBadge_complete(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ChecklistBadge",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ChecklistBadge",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5001,10 +5840,11 @@ func (ec *executionContext) _ChecklistBadge_total(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ChecklistBadge",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ChecklistBadge",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5027,6 +5867,76 @@ func (ec *executionContext) _ChecklistBadge_total(ctx context.Context, field gra
 	return ec.marshalNInt2int(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _CommentsBadge_total(ctx context.Context, field graphql.CollectedField, obj *CommentsBadge) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "CommentsBadge",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Total, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _CommentsBadge_unread(ctx context.Context, field graphql.CollectedField, obj *CommentsBadge) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "CommentsBadge",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Unread, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _CreateTaskCommentPayload_taskID(ctx context.Context, field graphql.CollectedField, obj *CreateTaskCommentPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -5035,10 +5945,11 @@ func (ec *executionContext) _CreateTaskCommentPayload_taskID(ctx context.Context
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreateTaskCommentPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreateTaskCommentPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5069,10 +5980,11 @@ func (ec *executionContext) _CreateTaskCommentPayload_comment(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreateTaskCommentPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreateTaskCommentPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5095,6 +6007,41 @@ func (ec *executionContext) _CreateTaskCommentPayload_comment(ctx context.Contex
 	return ec.marshalNTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTaskComment(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _CreateTaskDueDateNotificationsResult_notifications(ctx context.Context, field graphql.CollectedField, obj *CreateTaskDueDateNotificationsResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "CreateTaskDueDateNotificationsResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Notifications, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]DueDateNotification)
+	fc.Result = res
+	return ec.marshalNDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationᚄ(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _CreateTeamMemberPayload_team(ctx context.Context, field graphql.CollectedField, obj *CreateTeamMemberPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -5103,10 +6050,11 @@ func (ec *executionContext) _CreateTeamMemberPayload_team(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreateTeamMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreateTeamMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5137,10 +6085,11 @@ func (ec *executionContext) _CreateTeamMemberPayload_teamMember(ctx context.Cont
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreateTeamMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreateTeamMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5171,10 +6120,11 @@ func (ec *executionContext) _CreatedBy_id(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreatedBy",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreatedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5205,10 +6155,11 @@ func (ec *executionContext) _CreatedBy_fullName(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreatedBy",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreatedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5239,10 +6190,11 @@ func (ec *executionContext) _CreatedBy_profileIcon(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "CreatedBy",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "CreatedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5273,10 +6225,11 @@ func (ec *executionContext) _DeleteInvitedProjectMemberPayload_invitedMember(ctx
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteInvitedProjectMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteInvitedProjectMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5307,10 +6260,11 @@ func (ec *executionContext) _DeleteInvitedUserAccountPayload_invitedUser(ctx con
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteInvitedUserAccountPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteInvitedUserAccountPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5341,10 +6295,11 @@ func (ec *executionContext) _DeleteProjectMemberPayload_ok(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteProjectMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteProjectMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5375,10 +6330,11 @@ func (ec *executionContext) _DeleteProjectMemberPayload_member(ctx context.Conte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteProjectMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteProjectMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5409,10 +6365,11 @@ func (ec *executionContext) _DeleteProjectMemberPayload_projectID(ctx context.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteProjectMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteProjectMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5443,10 +6400,11 @@ func (ec *executionContext) _DeleteProjectPayload_ok(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteProjectPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteProjectPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5477,10 +6435,11 @@ func (ec *executionContext) _DeleteProjectPayload_project(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteProjectPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteProjectPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5511,10 +6470,11 @@ func (ec *executionContext) _DeleteTaskChecklistItemPayload_ok(ctx context.Conte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskChecklistItemPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskChecklistItemPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5545,10 +6505,11 @@ func (ec *executionContext) _DeleteTaskChecklistItemPayload_taskChecklistItem(ct
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskChecklistItemPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskChecklistItemPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5579,10 +6540,11 @@ func (ec *executionContext) _DeleteTaskChecklistPayload_ok(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskChecklistPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskChecklistPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5613,10 +6575,11 @@ func (ec *executionContext) _DeleteTaskChecklistPayload_taskChecklist(ctx contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskChecklistPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskChecklistPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5647,10 +6610,11 @@ func (ec *executionContext) _DeleteTaskCommentPayload_taskID(ctx context.Context
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskCommentPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskCommentPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5681,10 +6645,11 @@ func (ec *executionContext) _DeleteTaskCommentPayload_commentID(ctx context.Cont
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskCommentPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskCommentPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5707,6 +6672,41 @@ func (ec *executionContext) _DeleteTaskCommentPayload_commentID(ctx context.Cont
 	return ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _DeleteTaskDueDateNotificationsResult_notifications(ctx context.Context, field graphql.CollectedField, obj *DeleteTaskDueDateNotificationsResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "DeleteTaskDueDateNotificationsResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Notifications, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]uuid.UUID)
+	fc.Result = res
+	return ec.marshalNUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUIDᚄ(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _DeleteTaskGroupPayload_ok(ctx context.Context, field graphql.CollectedField, obj *DeleteTaskGroupPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -5715,10 +6715,11 @@ func (ec *executionContext) _DeleteTaskGroupPayload_ok(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskGroupPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskGroupPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5749,10 +6750,11 @@ func (ec *executionContext) _DeleteTaskGroupPayload_affectedRows(ctx context.Con
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskGroupPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskGroupPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5783,10 +6785,11 @@ func (ec *executionContext) _DeleteTaskGroupPayload_taskGroup(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskGroupPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskGroupPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5817,10 +6820,11 @@ func (ec *executionContext) _DeleteTaskGroupTasksPayload_taskGroupID(ctx context
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskGroupTasksPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskGroupTasksPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5851,10 +6855,11 @@ func (ec *executionContext) _DeleteTaskGroupTasksPayload_tasks(ctx context.Conte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskGroupTasksPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskGroupTasksPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5885,10 +6890,11 @@ func (ec *executionContext) _DeleteTaskPayload_taskID(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTaskPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTaskPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5919,10 +6925,11 @@ func (ec *executionContext) _DeleteTeamMemberPayload_teamID(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTeamMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTeamMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5953,10 +6960,11 @@ func (ec *executionContext) _DeleteTeamMemberPayload_userID(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTeamMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTeamMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -5987,10 +6995,11 @@ func (ec *executionContext) _DeleteTeamMemberPayload_affectedProjects(ctx contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTeamMemberPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTeamMemberPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6021,10 +7030,11 @@ func (ec *executionContext) _DeleteTeamPayload_ok(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTeamPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTeamPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6055,10 +7065,11 @@ func (ec *executionContext) _DeleteTeamPayload_team(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTeamPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTeamPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6089,10 +7100,11 @@ func (ec *executionContext) _DeleteTeamPayload_projects(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteTeamPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteTeamPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6123,10 +7135,11 @@ func (ec *executionContext) _DeleteUserAccountPayload_ok(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteUserAccountPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteUserAccountPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6157,10 +7170,11 @@ func (ec *executionContext) _DeleteUserAccountPayload_userAccount(ctx context.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DeleteUserAccountPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DeleteUserAccountPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6183,6 +7197,178 @@ func (ec *executionContext) _DeleteUserAccountPayload_userAccount(ctx context.Co
 	return ec.marshalNUserAccount2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐUserAccount(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _DueDate_at(ctx context.Context, field graphql.CollectedField, obj *DueDate) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "DueDate",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.At, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*time.Time)
+	fc.Result = res
+	return ec.marshalOTime2ᚖtimeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _DueDate_notifications(ctx context.Context, field graphql.CollectedField, obj *DueDate) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "DueDate",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Notifications, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]DueDateNotification)
+	fc.Result = res
+	return ec.marshalNDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _DueDateNotification_id(ctx context.Context, field graphql.CollectedField, obj *DueDateNotification) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "DueDateNotification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(uuid.UUID)
+	fc.Result = res
+	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _DueDateNotification_period(ctx context.Context, field graphql.CollectedField, obj *DueDateNotification) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "DueDateNotification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Period, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _DueDateNotification_duration(ctx context.Context, field graphql.CollectedField, obj *DueDateNotification) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "DueDateNotification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Duration, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(DueDateNotificationDuration)
+	fc.Result = res
+	return ec.marshalNDueDateNotificationDuration2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationDuration(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _DuplicateTaskGroupPayload_taskGroup(ctx context.Context, field graphql.CollectedField, obj *DuplicateTaskGroupPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -6191,10 +7377,11 @@ func (ec *executionContext) _DuplicateTaskGroupPayload_taskGroup(ctx context.Con
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "DuplicateTaskGroupPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "DuplicateTaskGroupPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6217,6 +7404,41 @@ func (ec *executionContext) _DuplicateTaskGroupPayload_taskGroup(ctx context.Con
 	return ec.marshalNTaskGroup2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTaskGroup(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _HasUnreadNotificationsResult_unread(ctx context.Context, field graphql.CollectedField, obj *HasUnreadNotificationsResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "HasUnreadNotificationsResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Unread, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _InviteProjectMembersPayload_ok(ctx context.Context, field graphql.CollectedField, obj *InviteProjectMembersPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -6225,10 +7447,11 @@ func (ec *executionContext) _InviteProjectMembersPayload_ok(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InviteProjectMembersPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InviteProjectMembersPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6259,10 +7482,11 @@ func (ec *executionContext) _InviteProjectMembersPayload_projectID(ctx context.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InviteProjectMembersPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InviteProjectMembersPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6293,10 +7517,11 @@ func (ec *executionContext) _InviteProjectMembersPayload_members(ctx context.Con
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InviteProjectMembersPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InviteProjectMembersPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6327,10 +7552,11 @@ func (ec *executionContext) _InviteProjectMembersPayload_invitedMembers(ctx cont
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InviteProjectMembersPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InviteProjectMembersPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6361,10 +7587,11 @@ func (ec *executionContext) _InvitedMember_email(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InvitedMember",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InvitedMember",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6395,10 +7622,11 @@ func (ec *executionContext) _InvitedMember_invitedOn(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InvitedMember",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InvitedMember",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6429,10 +7657,11 @@ func (ec *executionContext) _InvitedUserAccount_id(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InvitedUserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InvitedUserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6463,10 +7692,11 @@ func (ec *executionContext) _InvitedUserAccount_email(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InvitedUserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InvitedUserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6497,10 +7727,11 @@ func (ec *executionContext) _InvitedUserAccount_invitedOn(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InvitedUserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InvitedUserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6531,10 +7762,11 @@ func (ec *executionContext) _InvitedUserAccount_member(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "InvitedUserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "InvitedUserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6565,10 +7797,11 @@ func (ec *executionContext) _LabelColor_id(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "LabelColor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "LabelColor",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6599,10 +7832,11 @@ func (ec *executionContext) _LabelColor_name(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "LabelColor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "LabelColor",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6633,10 +7867,11 @@ func (ec *executionContext) _LabelColor_position(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "LabelColor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "LabelColor",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6667,10 +7902,11 @@ func (ec *executionContext) _LabelColor_colorHex(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "LabelColor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "LabelColor",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6701,10 +7937,11 @@ func (ec *executionContext) _MePayload_user(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6727,6 +7964,38 @@ func (ec *executionContext) _MePayload_user(ctx context.Context, field graphql.C
 	return ec.marshalNUserAccount2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐUserAccount(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _MePayload_organization(ctx context.Context, field graphql.CollectedField, obj *MePayload) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "MePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Organization, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*RoleCode)
+	fc.Result = res
+	return ec.marshalORoleCode2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _MePayload_teamRoles(ctx context.Context, field graphql.CollectedField, obj *MePayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -6735,10 +8004,11 @@ func (ec *executionContext) _MePayload_teamRoles(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6769,10 +8039,11 @@ func (ec *executionContext) _MePayload_projectRoles(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6803,10 +8074,11 @@ func (ec *executionContext) _Member_id(ctx context.Context, field graphql.Collec
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6837,10 +8109,11 @@ func (ec *executionContext) _Member_role(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6871,10 +8144,11 @@ func (ec *executionContext) _Member_fullName(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6905,10 +8179,11 @@ func (ec *executionContext) _Member_username(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6939,10 +8214,11 @@ func (ec *executionContext) _Member_profileIcon(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -6973,10 +8249,11 @@ func (ec *executionContext) _Member_owned(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7007,10 +8284,11 @@ func (ec *executionContext) _Member_member(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Member",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Member",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7041,10 +8319,11 @@ func (ec *executionContext) _MemberList_teams(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MemberList",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MemberList",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7075,10 +8354,11 @@ func (ec *executionContext) _MemberList_projects(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MemberList",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MemberList",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7109,10 +8389,11 @@ func (ec *executionContext) _MemberSearchResult_similarity(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MemberSearchResult",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MemberSearchResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7143,10 +8424,11 @@ func (ec *executionContext) _MemberSearchResult_id(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MemberSearchResult",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MemberSearchResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7177,10 +8459,11 @@ func (ec *executionContext) _MemberSearchResult_user(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MemberSearchResult",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MemberSearchResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7208,10 +8491,11 @@ func (ec *executionContext) _MemberSearchResult_status(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "MemberSearchResult",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "MemberSearchResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7234,7 +8518,7 @@ func (ec *executionContext) _MemberSearchResult_status(ctx context.Context, fiel
 	return ec.marshalNShareStatus2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐShareStatus(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_createProject(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_notificationToggleRead(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -7242,55 +8526,24 @@ func (ec *executionContext) _Mutation_createProject(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_createProject_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_notificationToggleRead_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	fc.Args = args
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().CreateProject(rctx, args["input"].(NewProject))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "TEAM")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TEAM")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Project); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Project`, tmp)
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Mutation().NotificationToggleRead(rctx, args["input"].(NotificationToggleReadInput))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -7302,12 +8555,12 @@ func (ec *executionContext) _Mutation_createProject(ctx context.Context, field g
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*db.Project)
+	res := resTmp.(*Notified)
 	fc.Result = res
-	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
+	return ec.marshalNNotified2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotified(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_deleteProject(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_notificationMarkAllRead(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -7315,55 +8568,17 @@ func (ec *executionContext) _Mutation_deleteProject(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_deleteProject_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().DeleteProject(rctx, args["input"].(DeleteProject))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*DeleteProjectPayload); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.DeleteProjectPayload`, tmp)
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Mutation().NotificationMarkAllRead(rctx)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -7375,82 +8590,9 @@ func (ec *executionContext) _Mutation_deleteProject(ctx context.Context, field g
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*DeleteProjectPayload)
+	res := resTmp.(*NotificationMarkAllAsReadResult)
 	fc.Result = res
-	return ec.marshalNDeleteProjectPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectPayload(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Mutation_updateProjectName(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_updateProjectName_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().UpdateProjectName(rctx, args["input"].(*UpdateProjectName))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Project); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Project`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Project)
-	fc.Result = res
-	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
+	return ec.marshalNNotificationMarkAllAsReadResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationMarkAllAsReadResult(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Mutation_createProjectLabel(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -7461,10 +8603,11 @@ func (ec *executionContext) _Mutation_createProjectLabel(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7501,7 +8644,7 @@ func (ec *executionContext) _Mutation_createProjectLabel(ctx context.Context, fi
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7534,10 +8677,11 @@ func (ec *executionContext) _Mutation_deleteProjectLabel(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7574,7 +8718,7 @@ func (ec *executionContext) _Mutation_deleteProjectLabel(ctx context.Context, fi
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7607,10 +8751,11 @@ func (ec *executionContext) _Mutation_updateProjectLabel(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7647,7 +8792,7 @@ func (ec *executionContext) _Mutation_updateProjectLabel(ctx context.Context, fi
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7680,10 +8825,11 @@ func (ec *executionContext) _Mutation_updateProjectLabelName(ctx context.Context
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7720,7 +8866,7 @@ func (ec *executionContext) _Mutation_updateProjectLabelName(ctx context.Context
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7753,10 +8899,11 @@ func (ec *executionContext) _Mutation_updateProjectLabelColor(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7793,7 +8940,7 @@ func (ec *executionContext) _Mutation_updateProjectLabelColor(ctx context.Contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7826,10 +8973,11 @@ func (ec *executionContext) _Mutation_inviteProjectMembers(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7866,7 +9014,7 @@ func (ec *executionContext) _Mutation_inviteProjectMembers(ctx context.Context, 
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7899,10 +9047,11 @@ func (ec *executionContext) _Mutation_deleteProjectMember(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -7939,7 +9088,7 @@ func (ec *executionContext) _Mutation_deleteProjectMember(ctx context.Context, f
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -7972,10 +9121,11 @@ func (ec *executionContext) _Mutation_updateProjectMemberRole(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -8012,7 +9162,7 @@ func (ec *executionContext) _Mutation_updateProjectMemberRole(ctx context.Contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -8045,10 +9195,11 @@ func (ec *executionContext) _Mutation_deleteInvitedProjectMember(ctx context.Con
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -8085,7 +9236,7 @@ func (ec *executionContext) _Mutation_deleteInvitedProjectMember(ctx context.Con
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -8110,7 +9261,7 @@ func (ec *executionContext) _Mutation_deleteInvitedProjectMember(ctx context.Con
 	return ec.marshalNDeleteInvitedProjectMemberPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedProjectMemberPayload(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_createTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_createProject(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -8118,15 +9269,16 @@ func (ec *executionContext) _Mutation_createTask(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_createTask_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_createProject_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
@@ -8135,18 +9287,18 @@ func (ec *executionContext) _Mutation_createTask(ctx context.Context, field grap
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		directive0 := func(rctx context.Context) (interface{}, error) {
 			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().CreateTask(rctx, args["input"].(NewTask))
+			return ec.resolvers.Mutation().CreateProject(rctx, args["input"].(NewProject))
 		}
 		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
 			if err != nil {
 				return nil, err
 			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "TEAM")
 			if err != nil {
 				return nil, err
 			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK_GROUP")
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TEAM")
 			if err != nil {
 				return nil, err
 			}
@@ -8158,15 +9310,15 @@ func (ec *executionContext) _Mutation_createTask(ctx context.Context, field grap
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
 		}
-		if data, ok := tmp.(*db.Task); ok {
+		if data, ok := tmp.(*db.Project); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Project`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -8178,12 +9330,12 @@ func (ec *executionContext) _Mutation_createTask(ctx context.Context, field grap
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*db.Task)
+	res := resTmp.(*db.Project)
 	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_deleteProject(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -8191,15 +9343,16 @@ func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_deleteTask_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_deleteProject_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
@@ -8208,10 +9361,10 @@ func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field grap
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		directive0 := func(rctx context.Context) (interface{}, error) {
 			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().DeleteTask(rctx, args["input"].(DeleteTaskInput))
+			return ec.resolvers.Mutation().DeleteProject(rctx, args["input"].(DeleteProject))
 		}
 		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
 			if err != nil {
 				return nil, err
 			}
@@ -8219,7 +9372,7 @@ func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field grap
 			if err != nil {
 				return nil, err
 			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "PROJECT")
 			if err != nil {
 				return nil, err
 			}
@@ -8231,15 +9384,15 @@ func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field grap
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
 		}
-		if data, ok := tmp.(*DeleteTaskPayload); ok {
+		if data, ok := tmp.(*DeleteProjectPayload); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.DeleteTaskPayload`, tmp)
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.DeleteProjectPayload`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -8251,12 +9404,12 @@ func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field grap
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*DeleteTaskPayload)
+	res := resTmp.(*DeleteProjectPayload)
 	fc.Result = res
-	return ec.marshalNDeleteTaskPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskPayload(ctx, field.Selections, res)
+	return ec.marshalNDeleteProjectPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectPayload(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_updateProjectName(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -8264,15 +9417,16 @@ func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_updateTaskDescription_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_updateProjectName_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
@@ -8281,10 +9435,10 @@ func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context,
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		directive0 := func(rctx context.Context) (interface{}, error) {
 			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().UpdateTaskDescription(rctx, args["input"].(UpdateTaskDescriptionInput))
+			return ec.resolvers.Mutation().UpdateProjectName(rctx, args["input"].(*UpdateProjectName))
 		}
 		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
 			if err != nil {
 				return nil, err
 			}
@@ -8292,7 +9446,7 @@ func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context,
 			if err != nil {
 				return nil, err
 			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "PROJECT")
 			if err != nil {
 				return nil, err
 			}
@@ -8304,15 +9458,15 @@ func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context,
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
 		}
-		if data, ok := tmp.(*db.Task); ok {
+		if data, ok := tmp.(*db.Project); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Project`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -8324,12 +9478,12 @@ func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context,
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*db.Task)
+	res := resTmp.(*db.Project)
 	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_toggleProjectVisibility(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -8337,15 +9491,16 @@ func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_updateTaskLocation_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_toggleProjectVisibility_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
@@ -8354,10 +9509,10 @@ func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, fi
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		directive0 := func(rctx context.Context) (interface{}, error) {
 			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().UpdateTaskLocation(rctx, args["input"].(NewTaskLocation))
+			return ec.resolvers.Mutation().ToggleProjectVisibility(rctx, args["input"].(ToggleProjectVisibility))
 		}
 		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
 			if err != nil {
 				return nil, err
 			}
@@ -8365,7 +9520,7 @@ func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, fi
 			if err != nil {
 				return nil, err
 			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "PROJECT")
 			if err != nil {
 				return nil, err
 			}
@@ -8377,15 +9532,15 @@ func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, fi
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
 		}
-		if data, ok := tmp.(*UpdateTaskLocationPayload); ok {
+		if data, ok := tmp.(*ToggleProjectVisibilityPayload); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.UpdateTaskLocationPayload`, tmp)
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.ToggleProjectVisibilityPayload`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -8397,374 +9552,9 @@ func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, fi
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*UpdateTaskLocationPayload)
+	res := resTmp.(*ToggleProjectVisibilityPayload)
 	fc.Result = res
-	return ec.marshalNUpdateTaskLocationPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskLocationPayload(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Mutation_updateTaskName(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_updateTaskName_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().UpdateTaskName(rctx, args["input"].(UpdateTaskName))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Task); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Task)
-	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Mutation_setTaskComplete(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_setTaskComplete_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().SetTaskComplete(rctx, args["input"].(SetTaskComplete))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Task); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Task)
-	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Mutation_updateTaskDueDate(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_updateTaskDueDate_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().UpdateTaskDueDate(rctx, args["input"].(UpdateTaskDueDate))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Task); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Task)
-	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Mutation_assignTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_assignTask_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().AssignTask(rctx, args["input"].(*AssignTaskInput))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Task); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Task)
-	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Mutation_unassignTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_unassignTask_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().UnassignTask(rctx, args["input"].(*UnassignTaskInput))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Task); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Task)
-	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+	return ec.marshalNToggleProjectVisibilityPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleProjectVisibilityPayload(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Mutation_createTaskChecklist(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -8775,10 +9565,11 @@ func (ec *executionContext) _Mutation_createTaskChecklist(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -8815,7 +9606,7 @@ func (ec *executionContext) _Mutation_createTaskChecklist(ctx context.Context, f
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -8848,10 +9639,11 @@ func (ec *executionContext) _Mutation_deleteTaskChecklist(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -8888,7 +9680,7 @@ func (ec *executionContext) _Mutation_deleteTaskChecklist(ctx context.Context, f
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -8921,10 +9713,11 @@ func (ec *executionContext) _Mutation_updateTaskChecklistName(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -8961,7 +9754,7 @@ func (ec *executionContext) _Mutation_updateTaskChecklistName(ctx context.Contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -8994,10 +9787,11 @@ func (ec *executionContext) _Mutation_createTaskChecklistItem(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9034,7 +9828,7 @@ func (ec *executionContext) _Mutation_createTaskChecklistItem(ctx context.Contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9067,10 +9861,11 @@ func (ec *executionContext) _Mutation_updateTaskChecklistLocation(ctx context.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9107,7 +9902,7 @@ func (ec *executionContext) _Mutation_updateTaskChecklistLocation(ctx context.Co
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9140,10 +9935,11 @@ func (ec *executionContext) _Mutation_updateTaskChecklistItemName(ctx context.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9180,7 +9976,7 @@ func (ec *executionContext) _Mutation_updateTaskChecklistItemName(ctx context.Co
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9213,10 +10009,11 @@ func (ec *executionContext) _Mutation_setTaskChecklistItemComplete(ctx context.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9253,7 +10050,7 @@ func (ec *executionContext) _Mutation_setTaskChecklistItemComplete(ctx context.C
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9286,10 +10083,11 @@ func (ec *executionContext) _Mutation_deleteTaskChecklistItem(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9326,7 +10124,7 @@ func (ec *executionContext) _Mutation_deleteTaskChecklistItem(ctx context.Contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9359,10 +10157,11 @@ func (ec *executionContext) _Mutation_updateTaskChecklistItemLocation(ctx contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9399,7 +10198,7 @@ func (ec *executionContext) _Mutation_updateTaskChecklistItemLocation(ctx contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9432,10 +10231,11 @@ func (ec *executionContext) _Mutation_createTaskComment(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9472,7 +10272,7 @@ func (ec *executionContext) _Mutation_createTaskComment(ctx context.Context, fie
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9505,10 +10305,11 @@ func (ec *executionContext) _Mutation_deleteTaskComment(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9545,7 +10346,7 @@ func (ec *executionContext) _Mutation_deleteTaskComment(ctx context.Context, fie
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9578,10 +10379,11 @@ func (ec *executionContext) _Mutation_updateTaskComment(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9618,7 +10420,7 @@ func (ec *executionContext) _Mutation_updateTaskComment(ctx context.Context, fie
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9651,10 +10453,11 @@ func (ec *executionContext) _Mutation_createTaskGroup(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9691,7 +10494,7 @@ func (ec *executionContext) _Mutation_createTaskGroup(ctx context.Context, field
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9724,10 +10527,11 @@ func (ec *executionContext) _Mutation_updateTaskGroupLocation(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9764,7 +10568,7 @@ func (ec *executionContext) _Mutation_updateTaskGroupLocation(ctx context.Contex
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9797,10 +10601,11 @@ func (ec *executionContext) _Mutation_updateTaskGroupName(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9837,7 +10642,7 @@ func (ec *executionContext) _Mutation_updateTaskGroupName(ctx context.Context, f
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9870,10 +10675,11 @@ func (ec *executionContext) _Mutation_deleteTaskGroup(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9910,7 +10716,7 @@ func (ec *executionContext) _Mutation_deleteTaskGroup(ctx context.Context, field
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -9943,10 +10749,11 @@ func (ec *executionContext) _Mutation_duplicateTaskGroup(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -9983,7 +10790,7 @@ func (ec *executionContext) _Mutation_duplicateTaskGroup(ctx context.Context, fi
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10016,10 +10823,11 @@ func (ec *executionContext) _Mutation_sortTaskGroup(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10056,7 +10864,7 @@ func (ec *executionContext) _Mutation_sortTaskGroup(ctx context.Context, field g
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10089,10 +10897,11 @@ func (ec *executionContext) _Mutation_deleteTaskGroupTasks(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10129,7 +10938,7 @@ func (ec *executionContext) _Mutation_deleteTaskGroupTasks(ctx context.Context, 
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10162,10 +10971,11 @@ func (ec *executionContext) _Mutation_addTaskLabel(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10202,7 +11012,7 @@ func (ec *executionContext) _Mutation_addTaskLabel(ctx context.Context, field gr
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10235,10 +11045,11 @@ func (ec *executionContext) _Mutation_removeTaskLabel(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10275,7 +11086,7 @@ func (ec *executionContext) _Mutation_removeTaskLabel(ctx context.Context, field
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10308,10 +11119,11 @@ func (ec *executionContext) _Mutation_toggleTaskLabel(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10348,7 +11160,7 @@ func (ec *executionContext) _Mutation_toggleTaskLabel(ctx context.Context, field
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10373,7 +11185,7 @@ func (ec *executionContext) _Mutation_toggleTaskLabel(ctx context.Context, field
 	return ec.marshalNToggleTaskLabelPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleTaskLabelPayload(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_deleteTeam(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_createTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -10381,15 +11193,16 @@ func (ec *executionContext) _Mutation_deleteTeam(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_deleteTeam_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_createTask_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
@@ -10398,18 +11211,18 @@ func (ec *executionContext) _Mutation_deleteTeam(ctx context.Context, field grap
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		directive0 := func(rctx context.Context) (interface{}, error) {
 			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().DeleteTeam(rctx, args["input"].(DeleteTeam))
+			return ec.resolvers.Mutation().CreateTask(rctx, args["input"].(NewTask))
 		}
 		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
 			if err != nil {
 				return nil, err
 			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "TEAM")
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
 			if err != nil {
 				return nil, err
 			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TEAM")
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK_GROUP")
 			if err != nil {
 				return nil, err
 			}
@@ -10421,15 +11234,15 @@ func (ec *executionContext) _Mutation_deleteTeam(ctx context.Context, field grap
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
 		}
-		if data, ok := tmp.(*DeleteTeamPayload); ok {
+		if data, ok := tmp.(*db.Task); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.DeleteTeamPayload`, tmp)
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -10441,12 +11254,12 @@ func (ec *executionContext) _Mutation_deleteTeam(ctx context.Context, field grap
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*DeleteTeamPayload)
+	res := resTmp.(*db.Task)
 	fc.Result = res
-	return ec.marshalNDeleteTeamPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeamPayload(ctx, field.Selections, res)
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_createTeam(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_deleteTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -10454,15 +11267,16 @@ func (ec *executionContext) _Mutation_createTeam(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_createTeam_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_deleteTask_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
@@ -10471,18 +11285,18 @@ func (ec *executionContext) _Mutation_createTeam(ctx context.Context, field grap
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		directive0 := func(rctx context.Context) (interface{}, error) {
 			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Mutation().CreateTeam(rctx, args["input"].(NewTeam))
+			return ec.resolvers.Mutation().DeleteTask(rctx, args["input"].(DeleteTaskInput))
 		}
 		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
 			if err != nil {
 				return nil, err
 			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "ORG")
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
 			if err != nil {
 				return nil, err
 			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "ORG")
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
 			if err != nil {
 				return nil, err
 			}
@@ -10494,15 +11308,15 @@ func (ec *executionContext) _Mutation_createTeam(ctx context.Context, field grap
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
 		}
-		if data, ok := tmp.(*db.Team); ok {
+		if data, ok := tmp.(*DeleteTaskPayload); ok {
 			return data, nil
 		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Team`, tmp)
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.DeleteTaskPayload`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -10514,9 +11328,727 @@ func (ec *executionContext) _Mutation_createTeam(ctx context.Context, field grap
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*db.Team)
+	res := resTmp.(*DeleteTaskPayload)
 	fc.Result = res
-	return ec.marshalNTeam2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeam(ctx, field.Selections, res)
+	return ec.marshalNDeleteTaskPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskPayload(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_updateTaskDescription(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_updateTaskDescription_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().UpdateTaskDescription(rctx, args["input"].(UpdateTaskDescriptionInput))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_updateTaskLocation(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_updateTaskLocation_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().UpdateTaskLocation(rctx, args["input"].(NewTaskLocation))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*UpdateTaskLocationPayload); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.UpdateTaskLocationPayload`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*UpdateTaskLocationPayload)
+	fc.Result = res
+	return ec.marshalNUpdateTaskLocationPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskLocationPayload(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_updateTaskName(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_updateTaskName_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().UpdateTaskName(rctx, args["input"].(UpdateTaskName))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_setTaskComplete(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_setTaskComplete_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().SetTaskComplete(rctx, args["input"].(SetTaskComplete))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_updateTaskDueDate(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_updateTaskDueDate_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().UpdateTaskDueDate(rctx, args["input"].(UpdateTaskDueDate))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_toggleTaskWatch(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_toggleTaskWatch_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().ToggleTaskWatch(rctx, args["input"].(ToggleTaskWatch))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_assignTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_assignTask_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().AssignTask(rctx, args["input"].(*AssignTaskInput))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_unassignTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_unassignTask_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().UnassignTask(rctx, args["input"].(*UnassignTaskInput))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TASK")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Task); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Task`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_createTaskDueDateNotifications(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_createTaskDueDateNotifications_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Mutation().CreateTaskDueDateNotifications(rctx, args["input"].([]CreateTaskDueDateNotification))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*CreateTaskDueDateNotificationsResult)
+	fc.Result = res
+	return ec.marshalNCreateTaskDueDateNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotificationsResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_updateTaskDueDateNotifications(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_updateTaskDueDateNotifications_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Mutation().UpdateTaskDueDateNotifications(rctx, args["input"].([]UpdateTaskDueDateNotification))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*UpdateTaskDueDateNotificationsResult)
+	fc.Result = res
+	return ec.marshalNUpdateTaskDueDateNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotificationsResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_deleteTaskDueDateNotifications(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_deleteTaskDueDateNotifications_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Mutation().DeleteTaskDueDateNotifications(rctx, args["input"].([]DeleteTaskDueDateNotification))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*DeleteTaskDueDateNotificationsResult)
+	fc.Result = res
+	return ec.marshalNDeleteTaskDueDateNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotificationsResult(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Mutation_createTeamMember(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -10527,10 +12059,11 @@ func (ec *executionContext) _Mutation_createTeamMember(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10567,7 +12100,7 @@ func (ec *executionContext) _Mutation_createTeamMember(ctx context.Context, fiel
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10600,10 +12133,11 @@ func (ec *executionContext) _Mutation_updateTeamMemberRole(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10640,7 +12174,7 @@ func (ec *executionContext) _Mutation_updateTeamMemberRole(ctx context.Context, 
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10673,10 +12207,11 @@ func (ec *executionContext) _Mutation_deleteTeamMember(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10713,7 +12248,7 @@ func (ec *executionContext) _Mutation_deleteTeamMember(ctx context.Context, fiel
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10738,7 +12273,7 @@ func (ec *executionContext) _Mutation_deleteTeamMember(ctx context.Context, fiel
 	return ec.marshalNDeleteTeamMemberPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeamMemberPayload(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Mutation_createRefreshToken(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Mutation_deleteTeam(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -10746,23 +12281,56 @@ func (ec *executionContext) _Mutation_createRefreshToken(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Mutation_createRefreshToken_args(ctx, rawArgs)
+	args, err := ec.field_Mutation_deleteTeam_args(ctx, rawArgs)
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	fc.Args = args
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Mutation().CreateRefreshToken(rctx, args["input"].(NewRefreshToken))
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().DeleteTeam(rctx, args["input"].(DeleteTeam))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "TEAM")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "TEAM")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*DeleteTeamPayload); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/graph.DeleteTeamPayload`, tmp)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -10774,9 +12342,83 @@ func (ec *executionContext) _Mutation_createRefreshToken(ctx context.Context, fi
 		}
 		return graphql.Null
 	}
-	res := resTmp.(*db.RefreshToken)
+	res := resTmp.(*DeleteTeamPayload)
 	fc.Result = res
-	return ec.marshalNRefreshToken2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐRefreshToken(ctx, field.Selections, res)
+	return ec.marshalNDeleteTeamPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeamPayload(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Mutation_createTeam(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Mutation_createTeam_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		directive0 := func(rctx context.Context) (interface{}, error) {
+			ctx = rctx // use context from middleware stack in children
+			return ec.resolvers.Mutation().CreateTeam(rctx, args["input"].(NewTeam))
+		}
+		directive1 := func(ctx context.Context) (interface{}, error) {
+			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN"})
+			if err != nil {
+				return nil, err
+			}
+			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "ORG")
+			if err != nil {
+				return nil, err
+			}
+			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "ORG")
+			if err != nil {
+				return nil, err
+			}
+			if ec.directives.HasRole == nil {
+				return nil, errors.New("directive hasRole is not implemented")
+			}
+			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
+		}
+
+		tmp, err := directive1(rctx)
+		if err != nil {
+			return nil, graphql.ErrorOnPath(ctx, err)
+		}
+		if tmp == nil {
+			return nil, nil
+		}
+		if data, ok := tmp.(*db.Team); ok {
+			return data, nil
+		}
+		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Team`, tmp)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Team)
+	fc.Result = res
+	return ec.marshalNTeam2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeam(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Mutation_createUserAccount(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -10787,10 +12429,11 @@ func (ec *executionContext) _Mutation_createUserAccount(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10827,7 +12470,7 @@ func (ec *executionContext) _Mutation_createUserAccount(ctx context.Context, fie
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10860,10 +12503,11 @@ func (ec *executionContext) _Mutation_deleteUserAccount(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10900,7 +12544,7 @@ func (ec *executionContext) _Mutation_deleteUserAccount(ctx context.Context, fie
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -10933,10 +12577,11 @@ func (ec *executionContext) _Mutation_deleteInvitedUserAccount(ctx context.Conte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -10973,7 +12618,7 @@ func (ec *executionContext) _Mutation_deleteInvitedUserAccount(ctx context.Conte
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -11006,10 +12651,11 @@ func (ec *executionContext) _Mutation_logoutUser(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11047,10 +12693,11 @@ func (ec *executionContext) _Mutation_clearProfileAvatar(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11081,10 +12728,11 @@ func (ec *executionContext) _Mutation_updateUserPassword(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11122,10 +12770,11 @@ func (ec *executionContext) _Mutation_updateUserRole(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11162,7 +12811,7 @@ func (ec *executionContext) _Mutation_updateUserRole(ctx context.Context, field 
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -11195,10 +12844,11 @@ func (ec *executionContext) _Mutation_updateUserInfo(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Mutation",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Mutation",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11235,7 +12885,7 @@ func (ec *executionContext) _Mutation_updateUserInfo(ctx context.Context, field 
 
 		tmp, err := directive1(rctx)
 		if err != nil {
-			return nil, err
+			return nil, graphql.ErrorOnPath(ctx, err)
 		}
 		if tmp == nil {
 			return nil, nil
@@ -11260,6 +12910,76 @@ func (ec *executionContext) _Mutation_updateUserInfo(ctx context.Context, field 
 	return ec.marshalNUpdateUserInfoPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserInfoPayload(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _MyTasksPayload_tasks(ctx context.Context, field graphql.CollectedField, obj *MyTasksPayload) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "MyTasksPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Tasks, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTaskᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _MyTasksPayload_projects(ctx context.Context, field graphql.CollectedField, obj *MyTasksPayload) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "MyTasksPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Projects, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]ProjectTaskMapping)
+	fc.Result = res
+	return ec.marshalNProjectTaskMapping2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectTaskMappingᚄ(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Notification_id(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -11268,10 +12988,11 @@ func (ec *executionContext) _Notification_id(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Notification",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Notification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11294,40 +13015,6 @@ func (ec *executionContext) _Notification_id(ctx context.Context, field graphql.
 	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Notification_entity(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Notification",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Notification().Entity(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*NotificationEntity)
-	fc.Result = res
-	return ec.marshalNNotificationEntity2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationEntity(ctx, field.Selections, res)
-}
-
 func (ec *executionContext) _Notification_actionType(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -11336,10 +13023,11 @@ func (ec *executionContext) _Notification_actionType(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Notification",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Notification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11362,7 +13050,7 @@ func (ec *executionContext) _Notification_actionType(ctx context.Context, field 
 	return ec.marshalNActionType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionType(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Notification_actor(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
+func (ec *executionContext) _Notification_causedBy(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11370,33 +13058,31 @@ func (ec *executionContext) _Notification_actor(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Notification",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Notification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Notification().Actor(rctx, obj)
+		return ec.resolvers.Notification().CausedBy(rctx, obj)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
 		return graphql.Null
 	}
 	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
 		return graphql.Null
 	}
-	res := resTmp.(*NotificationActor)
+	res := resTmp.(*NotificationCausedBy)
 	fc.Result = res
-	return ec.marshalNNotificationActor2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationActor(ctx, field.Selections, res)
+	return ec.marshalONotificationCausedBy2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationCausedBy(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Notification_read(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
+func (ec *executionContext) _Notification_data(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11404,16 +13090,17 @@ func (ec *executionContext) _Notification_read(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Notification",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Notification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.Read, nil
+		return ec.resolvers.Notification().Data(rctx, obj)
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -11425,9 +13112,9 @@ func (ec *executionContext) _Notification_read(ctx context.Context, field graphq
 		}
 		return graphql.Null
 	}
-	res := resTmp.(bool)
+	res := resTmp.([]NotificationData)
 	fc.Result = res
-	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+	return ec.marshalNNotificationData2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationDataᚄ(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Notification_createdAt(ctx context.Context, field graphql.CollectedField, obj *db.Notification) (ret graphql.Marshaler) {
@@ -11438,10 +13125,11 @@ func (ec *executionContext) _Notification_createdAt(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Notification",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Notification",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11464,7 +13152,7 @@ func (ec *executionContext) _Notification_createdAt(ctx context.Context, field g
 	return ec.marshalNTime2ᚖtimeᚐTime(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _NotificationActor_id(ctx context.Context, field graphql.CollectedField, obj *NotificationActor) (ret graphql.Marshaler) {
+func (ec *executionContext) _NotificationCausedBy_fullname(ctx context.Context, field graphql.CollectedField, obj *NotificationCausedBy) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11472,10 +13160,81 @@ func (ec *executionContext) _NotificationActor_id(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "NotificationActor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "NotificationCausedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Fullname, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _NotificationCausedBy_username(ctx context.Context, field graphql.CollectedField, obj *NotificationCausedBy) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "NotificationCausedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Username, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _NotificationCausedBy_id(ctx context.Context, field graphql.CollectedField, obj *NotificationCausedBy) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "NotificationCausedBy",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11495,10 +13254,10 @@ func (ec *executionContext) _NotificationActor_id(ctx context.Context, field gra
 	}
 	res := resTmp.(uuid.UUID)
 	fc.Result = res
-	return ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
+	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _NotificationActor_type(ctx context.Context, field graphql.CollectedField, obj *NotificationActor) (ret graphql.Marshaler) {
+func (ec *executionContext) _NotificationData_key(ctx context.Context, field graphql.CollectedField, obj *NotificationData) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11506,50 +13265,17 @@ func (ec *executionContext) _NotificationActor_type(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "NotificationActor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "NotificationData",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.Type, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(ActorType)
-	fc.Result = res
-	return ec.marshalNActorType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActorType(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _NotificationActor_name(ctx context.Context, field graphql.CollectedField, obj *NotificationActor) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "NotificationActor",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.Name, nil
+		return obj.Key, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -11566,7 +13292,7 @@ func (ec *executionContext) _NotificationActor_name(ctx context.Context, field g
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _NotificationEntity_id(ctx context.Context, field graphql.CollectedField, obj *NotificationEntity) (ret graphql.Marshaler) {
+func (ec *executionContext) _NotificationData_value(ctx context.Context, field graphql.CollectedField, obj *NotificationData) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11574,10 +13300,81 @@ func (ec *executionContext) _NotificationEntity_id(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "NotificationEntity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "NotificationData",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Value, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _NotificationMarkAllAsReadResult_success(ctx context.Context, field graphql.CollectedField, obj *NotificationMarkAllAsReadResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "NotificationMarkAllAsReadResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Success, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Notified_id(ctx context.Context, field graphql.CollectedField, obj *Notified) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Notified",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11597,10 +13394,10 @@ func (ec *executionContext) _NotificationEntity_id(ctx context.Context, field gr
 	}
 	res := resTmp.(uuid.UUID)
 	fc.Result = res
-	return ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
+	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _NotificationEntity_type(ctx context.Context, field graphql.CollectedField, obj *NotificationEntity) (ret graphql.Marshaler) {
+func (ec *executionContext) _Notified_notification(ctx context.Context, field graphql.CollectedField, obj *Notified) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11608,16 +13405,17 @@ func (ec *executionContext) _NotificationEntity_type(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "NotificationEntity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Notified",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.Type, nil
+		return obj.Notification, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -11629,12 +13427,12 @@ func (ec *executionContext) _NotificationEntity_type(ctx context.Context, field 
 		}
 		return graphql.Null
 	}
-	res := resTmp.(EntityType)
+	res := resTmp.(*db.Notification)
 	fc.Result = res
-	return ec.marshalNEntityType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐEntityType(ctx, field.Selections, res)
+	return ec.marshalNNotification2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐNotification(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _NotificationEntity_name(ctx context.Context, field graphql.CollectedField, obj *NotificationEntity) (ret graphql.Marshaler) {
+func (ec *executionContext) _Notified_read(ctx context.Context, field graphql.CollectedField, obj *Notified) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -11642,16 +13440,17 @@ func (ec *executionContext) _NotificationEntity_name(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "NotificationEntity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Notified",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.Name, nil
+		return obj.Read, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -11663,9 +13462,146 @@ func (ec *executionContext) _NotificationEntity_name(ctx context.Context, field 
 		}
 		return graphql.Null
 	}
-	res := resTmp.(string)
+	res := resTmp.(bool)
 	fc.Result = res
-	return ec.marshalNString2string(ctx, field.Selections, res)
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Notified_readAt(ctx context.Context, field graphql.CollectedField, obj *Notified) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Notified",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ReadAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*time.Time)
+	fc.Result = res
+	return ec.marshalOTime2ᚖtimeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _NotifiedResult_totalCount(ctx context.Context, field graphql.CollectedField, obj *NotifiedResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "NotifiedResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TotalCount, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _NotifiedResult_notified(ctx context.Context, field graphql.CollectedField, obj *NotifiedResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "NotifiedResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Notified, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]Notified)
+	fc.Result = res
+	return ec.marshalNNotified2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _NotifiedResult_pageInfo(ctx context.Context, field graphql.CollectedField, obj *NotifiedResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "NotifiedResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PageInfo, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*PageInfo)
+	fc.Result = res
+	return ec.marshalNPageInfo2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐPageInfo(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Organization_id(ctx context.Context, field graphql.CollectedField, obj *db.Organization) (ret graphql.Marshaler) {
@@ -11676,10 +13612,11 @@ func (ec *executionContext) _Organization_id(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Organization",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Organization",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11710,10 +13647,11 @@ func (ec *executionContext) _Organization_name(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Organization",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Organization",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11744,10 +13682,11 @@ func (ec *executionContext) _OwnedList_teams(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "OwnedList",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "OwnedList",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11778,10 +13717,11 @@ func (ec *executionContext) _OwnedList_projects(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "OwnedList",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "OwnedList",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11812,10 +13752,11 @@ func (ec *executionContext) _OwnersList_projects(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "OwnersList",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "OwnersList",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11846,10 +13787,11 @@ func (ec *executionContext) _OwnersList_teams(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "OwnersList",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "OwnersList",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11872,6 +13814,73 @@ func (ec *executionContext) _OwnersList_teams(ctx context.Context, field graphql
 	return ec.marshalNUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUIDᚄ(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _PageInfo_endCursor(ctx context.Context, field graphql.CollectedField, obj *PageInfo) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "PageInfo",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.EndCursor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _PageInfo_hasNextPage(ctx context.Context, field graphql.CollectedField, obj *PageInfo) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "PageInfo",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasNextPage, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _ProfileIcon_url(ctx context.Context, field graphql.CollectedField, obj *ProfileIcon) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -11880,10 +13889,11 @@ func (ec *executionContext) _ProfileIcon_url(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProfileIcon",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ProfileIcon",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11911,10 +13921,11 @@ func (ec *executionContext) _ProfileIcon_initials(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProfileIcon",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ProfileIcon",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11942,10 +13953,11 @@ func (ec *executionContext) _ProfileIcon_bgColor(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProfileIcon",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ProfileIcon",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11973,10 +13985,11 @@ func (ec *executionContext) _Project_id(ctx context.Context, field graphql.Colle
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -11999,6 +14012,41 @@ func (ec *executionContext) _Project_id(ctx context.Context, field graphql.Colle
 	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Project_shortId(ctx context.Context, field graphql.CollectedField, obj *db.Project) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ShortID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Project_createdAt(ctx context.Context, field graphql.CollectedField, obj *db.Project) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -12007,10 +14055,11 @@ func (ec *executionContext) _Project_createdAt(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12041,10 +14090,11 @@ func (ec *executionContext) _Project_name(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12075,10 +14125,11 @@ func (ec *executionContext) _Project_team(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12106,10 +14157,11 @@ func (ec *executionContext) _Project_taskGroups(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12140,10 +14192,11 @@ func (ec *executionContext) _Project_members(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12174,10 +14227,11 @@ func (ec *executionContext) _Project_invitedMembers(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12200,6 +14254,73 @@ func (ec *executionContext) _Project_invitedMembers(ctx context.Context, field g
 	return ec.marshalNInvitedMember2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐInvitedMemberᚄ(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Project_publicOn(ctx context.Context, field graphql.CollectedField, obj *db.Project) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Project().PublicOn(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*time.Time)
+	fc.Result = res
+	return ec.marshalOTime2ᚖtimeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Project_permission(ctx context.Context, field graphql.CollectedField, obj *db.Project) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Project().Permission(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*ProjectPermission)
+	fc.Result = res
+	return ec.marshalNProjectPermission2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectPermission(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Project_labels(ctx context.Context, field graphql.CollectedField, obj *db.Project) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -12208,10 +14329,11 @@ func (ec *executionContext) _Project_labels(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Project",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Project",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12242,10 +14364,11 @@ func (ec *executionContext) _ProjectLabel_id(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProjectLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "ProjectLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12276,10 +14399,11 @@ func (ec *executionContext) _ProjectLabel_createdDate(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProjectLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ProjectLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12310,10 +14434,11 @@ func (ec *executionContext) _ProjectLabel_labelColor(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProjectLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "ProjectLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12344,10 +14469,11 @@ func (ec *executionContext) _ProjectLabel_name(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProjectLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "ProjectLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12367,6 +14493,111 @@ func (ec *executionContext) _ProjectLabel_name(ctx context.Context, field graphq
 	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _ProjectPermission_team(ctx context.Context, field graphql.CollectedField, obj *ProjectPermission) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "ProjectPermission",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Team, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(RoleCode)
+	fc.Result = res
+	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _ProjectPermission_project(ctx context.Context, field graphql.CollectedField, obj *ProjectPermission) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "ProjectPermission",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Project, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(RoleCode)
+	fc.Result = res
+	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _ProjectPermission_org(ctx context.Context, field graphql.CollectedField, obj *ProjectPermission) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "ProjectPermission",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Org, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(RoleCode)
+	fc.Result = res
+	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _ProjectRole_projectID(ctx context.Context, field graphql.CollectedField, obj *ProjectRole) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -12375,10 +14606,11 @@ func (ec *executionContext) _ProjectRole_projectID(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProjectRole",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ProjectRole",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12409,10 +14641,11 @@ func (ec *executionContext) _ProjectRole_roleCode(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ProjectRole",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ProjectRole",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12435,6 +14668,76 @@ func (ec *executionContext) _ProjectRole_roleCode(ctx context.Context, field gra
 	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _ProjectTaskMapping_projectID(ctx context.Context, field graphql.CollectedField, obj *ProjectTaskMapping) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "ProjectTaskMapping",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ProjectID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(uuid.UUID)
+	fc.Result = res
+	return ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _ProjectTaskMapping_taskID(ctx context.Context, field graphql.CollectedField, obj *ProjectTaskMapping) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "ProjectTaskMapping",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TaskID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(uuid.UUID)
+	fc.Result = res
+	return ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Query_organizations(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -12443,10 +14746,11 @@ func (ec *executionContext) _Query_organizations(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12477,10 +14781,11 @@ func (ec *executionContext) _Query_users(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12511,10 +14816,11 @@ func (ec *executionContext) _Query_invitedUsers(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12545,10 +14851,11 @@ func (ec *executionContext) _Query_findUser(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12578,120 +14885,6 @@ func (ec *executionContext) _Query_findUser(ctx context.Context, field graphql.C
 	return ec.marshalNUserAccount2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐUserAccount(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Query_findProject(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Query_findProject_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		directive0 := func(rctx context.Context) (interface{}, error) {
-			ctx = rctx // use context from middleware stack in children
-			return ec.resolvers.Query().FindProject(rctx, args["input"].(FindProject))
-		}
-		directive1 := func(ctx context.Context) (interface{}, error) {
-			roles, err := ec.unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevelᚄ(ctx, []interface{}{"ADMIN", "MEMBER"})
-			if err != nil {
-				return nil, err
-			}
-			level, err := ec.unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			typeArg, err := ec.unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx, "PROJECT")
-			if err != nil {
-				return nil, err
-			}
-			if ec.directives.HasRole == nil {
-				return nil, errors.New("directive hasRole is not implemented")
-			}
-			return ec.directives.HasRole(ctx, nil, directive0, roles, level, typeArg)
-		}
-
-		tmp, err := directive1(rctx)
-		if err != nil {
-			return nil, err
-		}
-		if tmp == nil {
-			return nil, nil
-		}
-		if data, ok := tmp.(*db.Project); ok {
-			return data, nil
-		}
-		return nil, fmt.Errorf(`unexpected type %T from directive, should be *github.com/jordanknott/taskcafe/internal/db.Project`, tmp)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Project)
-	fc.Result = res
-	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _Query_findTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	rawArgs := field.ArgumentMap(ec.Variables)
-	args, err := ec.field_Query_findTask_args(ctx, rawArgs)
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	fc.Args = args
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().FindTask(rctx, args["input"].(FindTask))
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(*db.Task)
-	fc.Result = res
-	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
-}
-
 func (ec *executionContext) _Query_projects(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -12700,10 +14893,11 @@ func (ec *executionContext) _Query_projects(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12733,6 +14927,41 @@ func (ec *executionContext) _Query_projects(ctx context.Context, field graphql.C
 	return ec.marshalNProject2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProjectᚄ(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Query_teams(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().Teams(rctx)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]db.Team)
+	fc.Result = res
+	return ec.marshalNTeam2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeamᚄ(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Query_findTeam(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -12741,10 +14970,11 @@ func (ec *executionContext) _Query_findTeam(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12774,7 +15004,7 @@ func (ec *executionContext) _Query_findTeam(ctx context.Context, field graphql.C
 	return ec.marshalNTeam2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeam(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _Query_teams(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+func (ec *executionContext) _Query_myTasks(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
 			ec.Error(ctx, ec.Recover(ctx, r))
@@ -12782,16 +15012,24 @@ func (ec *executionContext) _Query_teams(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Query_myTasks_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().Teams(rctx)
+		return ec.resolvers.Query().MyTasks(rctx, args["input"].(MyTasks))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -12803,9 +15041,9 @@ func (ec *executionContext) _Query_teams(ctx context.Context, field graphql.Coll
 		}
 		return graphql.Null
 	}
-	res := resTmp.([]db.Team)
+	res := resTmp.(*MyTasksPayload)
 	fc.Result = res
-	return ec.marshalNTeam2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeamᚄ(ctx, field.Selections, res)
+	return ec.marshalNMyTasksPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksPayload(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Query_labelColors(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -12816,10 +15054,11 @@ func (ec *executionContext) _Query_labelColors(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12850,10 +15089,11 @@ func (ec *executionContext) _Query_taskGroups(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12884,10 +15124,11 @@ func (ec *executionContext) _Query_me(ctx context.Context, field graphql.Collect
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12900,14 +15141,11 @@ func (ec *executionContext) _Query_me(ctx context.Context, field graphql.Collect
 		return graphql.Null
 	}
 	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
 		return graphql.Null
 	}
 	res := resTmp.(*MePayload)
 	fc.Result = res
-	return ec.marshalNMePayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMePayload(ctx, field.Selections, res)
+	return ec.marshalOMePayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMePayload(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Query_notifications(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -12918,10 +15156,11 @@ func (ec *executionContext) _Query_notifications(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12939,9 +15178,170 @@ func (ec *executionContext) _Query_notifications(ctx context.Context, field grap
 		}
 		return graphql.Null
 	}
-	res := resTmp.([]db.Notification)
+	res := resTmp.([]Notified)
 	fc.Result = res
-	return ec.marshalNNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐNotificationᚄ(ctx, field.Selections, res)
+	return ec.marshalNNotified2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Query_notified(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Query_notified_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().Notified(rctx, args["input"].(NotifiedInput))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*NotifiedResult)
+	fc.Result = res
+	return ec.marshalNNotifiedResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Query_hasUnreadNotifications(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().HasUnreadNotifications(rctx)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*HasUnreadNotificationsResult)
+	fc.Result = res
+	return ec.marshalNHasUnreadNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐHasUnreadNotificationsResult(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Query_findProject(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Query_findProject_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().FindProject(rctx, args["input"].(FindProject))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Project)
+	fc.Result = res
+	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Query_findTask(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	rawArgs := field.ArgumentMap(ec.Variables)
+	args, err := ec.field_Query_findTask_args(ctx, rawArgs)
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	fc.Args = args
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().FindTask(rctx, args["input"].(FindTask))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Task)
+	fc.Result = res
+	return ec.marshalNTask2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTask(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Query_searchMembers(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
@@ -12952,10 +15352,11 @@ func (ec *executionContext) _Query_searchMembers(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -12993,10 +15394,11 @@ func (ec *executionContext) _Query___type(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13031,10 +15433,11 @@ func (ec *executionContext) _Query___schema(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Query",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Query",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13054,142 +15457,6 @@ func (ec *executionContext) _Query___schema(ctx context.Context, field graphql.C
 	return ec.marshalO__Schema2ᚖgithubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐSchema(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) _RefreshToken_id(ctx context.Context, field graphql.CollectedField, obj *db.RefreshToken) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "RefreshToken",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.RefreshToken().ID(rctx, obj)
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(uuid.UUID)
-	fc.Result = res
-	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _RefreshToken_userId(ctx context.Context, field graphql.CollectedField, obj *db.RefreshToken) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "RefreshToken",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.UserID, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(uuid.UUID)
-	fc.Result = res
-	return ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _RefreshToken_expiresAt(ctx context.Context, field graphql.CollectedField, obj *db.RefreshToken) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "RefreshToken",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.ExpiresAt, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(time.Time)
-	fc.Result = res
-	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
-}
-
-func (ec *executionContext) _RefreshToken_createdAt(ctx context.Context, field graphql.CollectedField, obj *db.RefreshToken) (ret graphql.Marshaler) {
-	defer func() {
-		if r := recover(); r != nil {
-			ec.Error(ctx, ec.Recover(ctx, r))
-			ret = graphql.Null
-		}
-	}()
-	fc := &graphql.FieldContext{
-		Object:   "RefreshToken",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
-	}
-
-	ctx = graphql.WithFieldContext(ctx, fc)
-	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
-		ctx = rctx // use context from middleware stack in children
-		return obj.CreatedAt, nil
-	})
-	if err != nil {
-		ec.Error(ctx, err)
-		return graphql.Null
-	}
-	if resTmp == nil {
-		if !graphql.HasFieldError(ctx, fc) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	res := resTmp.(time.Time)
-	fc.Result = res
-	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
-}
-
 func (ec *executionContext) _Role_code(ctx context.Context, field graphql.CollectedField, obj *db.Role) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -13198,10 +15465,11 @@ func (ec *executionContext) _Role_code(ctx context.Context, field graphql.Collec
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Role",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Role",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13232,10 +15500,11 @@ func (ec *executionContext) _Role_name(ctx context.Context, field graphql.Collec
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Role",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Role",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13266,10 +15535,11 @@ func (ec *executionContext) _SortTaskGroupPayload_taskGroupID(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "SortTaskGroupPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "SortTaskGroupPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13300,10 +15570,11 @@ func (ec *executionContext) _SortTaskGroupPayload_tasks(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "SortTaskGroupPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "SortTaskGroupPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13326,6 +15597,51 @@ func (ec *executionContext) _SortTaskGroupPayload_tasks(ctx context.Context, fie
 	return ec.marshalNTask2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTaskᚄ(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Subscription_notificationAdded(ctx context.Context, field graphql.CollectedField) (ret func() graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = nil
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Subscription",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Subscription().NotificationAdded(rctx)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return nil
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return nil
+	}
+	return func() graphql.Marshaler {
+		res, ok := <-resTmp.(<-chan *Notified)
+		if !ok {
+			return nil
+		}
+		return graphql.WriterFunc(func(w io.Writer) {
+			w.Write([]byte{'{'})
+			graphql.MarshalString(field.Alias).MarshalGQL(w)
+			w.Write([]byte{':'})
+			ec.marshalNNotified2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotified(ctx, field.Selections, res).MarshalGQL(w)
+			w.Write([]byte{'}'})
+		})
+	}
+}
+
 func (ec *executionContext) _Task_id(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -13334,10 +15650,11 @@ func (ec *executionContext) _Task_id(ctx context.Context, field graphql.Collecte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13360,6 +15677,41 @@ func (ec *executionContext) _Task_id(ctx context.Context, field graphql.Collecte
 	return ec.marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Task_shortId(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ShortID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Task_taskGroup(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -13368,10 +15720,11 @@ func (ec *executionContext) _Task_taskGroup(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13402,10 +15755,11 @@ func (ec *executionContext) _Task_createdAt(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13436,10 +15790,11 @@ func (ec *executionContext) _Task_name(ctx context.Context, field graphql.Collec
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13470,10 +15825,11 @@ func (ec *executionContext) _Task_position(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13504,10 +15860,11 @@ func (ec *executionContext) _Task_description(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13527,6 +15884,41 @@ func (ec *executionContext) _Task_description(ctx context.Context, field graphql
 	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Task_watched(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Task().Watched(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Task_dueDate(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -13535,10 +15927,11 @@ func (ec *executionContext) _Task_dueDate(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13551,11 +15944,49 @@ func (ec *executionContext) _Task_dueDate(ctx context.Context, field graphql.Col
 		return graphql.Null
 	}
 	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
 		return graphql.Null
 	}
-	res := resTmp.(*time.Time)
+	res := resTmp.(*DueDate)
 	fc.Result = res
-	return ec.marshalOTime2ᚖtimeᚐTime(ctx, field.Selections, res)
+	return ec.marshalNDueDate2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDate(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _Task_hasTime(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasTime, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
 }
 
 func (ec *executionContext) _Task_complete(ctx context.Context, field graphql.CollectedField, obj *db.Task) (ret graphql.Marshaler) {
@@ -13566,10 +15997,11 @@ func (ec *executionContext) _Task_complete(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13600,10 +16032,11 @@ func (ec *executionContext) _Task_completedAt(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13631,10 +16064,11 @@ func (ec *executionContext) _Task_assigned(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13665,10 +16099,11 @@ func (ec *executionContext) _Task_labels(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13699,10 +16134,11 @@ func (ec *executionContext) _Task_checklists(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13733,10 +16169,11 @@ func (ec *executionContext) _Task_badges(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13767,10 +16204,11 @@ func (ec *executionContext) _Task_activity(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13801,10 +16239,11 @@ func (ec *executionContext) _Task_comments(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Task",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Task",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13835,10 +16274,11 @@ func (ec *executionContext) _TaskActivity_id(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskActivity",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13869,10 +16309,11 @@ func (ec *executionContext) _TaskActivity_type(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskActivity",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13903,10 +16344,11 @@ func (ec *executionContext) _TaskActivity_data(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskActivity",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13937,10 +16379,11 @@ func (ec *executionContext) _TaskActivity_causedBy(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskActivity",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -13971,10 +16414,11 @@ func (ec *executionContext) _TaskActivity_createdAt(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivity",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskActivity",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14005,10 +16449,11 @@ func (ec *executionContext) _TaskActivityData_name(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivityData",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskActivityData",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14039,10 +16484,11 @@ func (ec *executionContext) _TaskActivityData_value(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskActivityData",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskActivityData",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14073,10 +16519,11 @@ func (ec *executionContext) _TaskBadges_checklist(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskBadges",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskBadges",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14096,6 +16543,38 @@ func (ec *executionContext) _TaskBadges_checklist(ctx context.Context, field gra
 	return ec.marshalOChecklistBadge2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐChecklistBadge(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _TaskBadges_comments(ctx context.Context, field graphql.CollectedField, obj *TaskBadges) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "TaskBadges",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Comments, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*CommentsBadge)
+	fc.Result = res
+	return ec.marshalOCommentsBadge2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCommentsBadge(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _TaskChecklist_id(ctx context.Context, field graphql.CollectedField, obj *db.TaskChecklist) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -14104,10 +16583,11 @@ func (ec *executionContext) _TaskChecklist_id(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklist",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskChecklist",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14138,10 +16618,11 @@ func (ec *executionContext) _TaskChecklist_name(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklist",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskChecklist",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14172,10 +16653,11 @@ func (ec *executionContext) _TaskChecklist_position(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklist",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskChecklist",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14206,10 +16688,11 @@ func (ec *executionContext) _TaskChecklist_items(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklist",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskChecklist",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14240,10 +16723,11 @@ func (ec *executionContext) _TaskChecklistItem_id(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklistItem",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskChecklistItem",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14274,10 +16758,11 @@ func (ec *executionContext) _TaskChecklistItem_name(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklistItem",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskChecklistItem",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14308,10 +16793,11 @@ func (ec *executionContext) _TaskChecklistItem_taskChecklistID(ctx context.Conte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklistItem",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskChecklistItem",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14342,10 +16828,11 @@ func (ec *executionContext) _TaskChecklistItem_complete(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklistItem",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskChecklistItem",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14376,10 +16863,11 @@ func (ec *executionContext) _TaskChecklistItem_position(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklistItem",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskChecklistItem",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14410,10 +16898,11 @@ func (ec *executionContext) _TaskChecklistItem_dueDate(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskChecklistItem",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskChecklistItem",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14444,10 +16933,11 @@ func (ec *executionContext) _TaskComment_id(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskComment",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskComment",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14478,10 +16968,11 @@ func (ec *executionContext) _TaskComment_createdAt(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskComment",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskComment",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14512,10 +17003,11 @@ func (ec *executionContext) _TaskComment_updatedAt(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskComment",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskComment",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14543,10 +17035,11 @@ func (ec *executionContext) _TaskComment_message(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskComment",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskComment",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14577,10 +17070,11 @@ func (ec *executionContext) _TaskComment_createdBy(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskComment",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskComment",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14611,10 +17105,11 @@ func (ec *executionContext) _TaskComment_pinned(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskComment",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskComment",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14645,10 +17140,11 @@ func (ec *executionContext) _TaskGroup_id(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskGroup",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskGroup",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14679,10 +17175,11 @@ func (ec *executionContext) _TaskGroup_projectID(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskGroup",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskGroup",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14713,10 +17210,11 @@ func (ec *executionContext) _TaskGroup_createdAt(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskGroup",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskGroup",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14747,10 +17245,11 @@ func (ec *executionContext) _TaskGroup_name(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskGroup",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskGroup",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14781,10 +17280,11 @@ func (ec *executionContext) _TaskGroup_position(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskGroup",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskGroup",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14815,10 +17315,11 @@ func (ec *executionContext) _TaskGroup_tasks(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskGroup",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskGroup",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14849,10 +17350,11 @@ func (ec *executionContext) _TaskLabel_id(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14883,10 +17385,11 @@ func (ec *executionContext) _TaskLabel_projectLabel(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "TaskLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14917,10 +17420,11 @@ func (ec *executionContext) _TaskLabel_assignedDate(ctx context.Context, field g
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TaskLabel",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TaskLabel",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14951,10 +17455,11 @@ func (ec *executionContext) _Team_id(ctx context.Context, field graphql.Collecte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Team",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Team",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -14985,10 +17490,11 @@ func (ec *executionContext) _Team_createdAt(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Team",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Team",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15019,10 +17525,11 @@ func (ec *executionContext) _Team_name(ctx context.Context, field graphql.Collec
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Team",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "Team",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15045,6 +17552,41 @@ func (ec *executionContext) _Team_name(ctx context.Context, field graphql.Collec
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _Team_permission(ctx context.Context, field graphql.CollectedField, obj *db.Team) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "Team",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Team().Permission(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*TeamPermission)
+	fc.Result = res
+	return ec.marshalNTeamPermission2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTeamPermission(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _Team_members(ctx context.Context, field graphql.CollectedField, obj *db.Team) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -15053,10 +17595,11 @@ func (ec *executionContext) _Team_members(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "Team",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "Team",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15079,6 +17622,76 @@ func (ec *executionContext) _Team_members(ctx context.Context, field graphql.Col
 	return ec.marshalNMember2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberᚄ(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _TeamPermission_team(ctx context.Context, field graphql.CollectedField, obj *TeamPermission) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "TeamPermission",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Team, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(RoleCode)
+	fc.Result = res
+	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) _TeamPermission_org(ctx context.Context, field graphql.CollectedField, obj *TeamPermission) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "TeamPermission",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Org, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(RoleCode)
+	fc.Result = res
+	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _TeamRole_teamID(ctx context.Context, field graphql.CollectedField, obj *TeamRole) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -15087,10 +17700,11 @@ func (ec *executionContext) _TeamRole_teamID(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TeamRole",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TeamRole",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15121,10 +17735,11 @@ func (ec *executionContext) _TeamRole_roleCode(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "TeamRole",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "TeamRole",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15147,6 +17762,41 @@ func (ec *executionContext) _TeamRole_roleCode(ctx context.Context, field graphq
 	return ec.marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _ToggleProjectVisibilityPayload_project(ctx context.Context, field graphql.CollectedField, obj *ToggleProjectVisibilityPayload) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "ToggleProjectVisibilityPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Project, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*db.Project)
+	fc.Result = res
+	return ec.marshalNProject2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐProject(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _ToggleTaskLabelPayload_active(ctx context.Context, field graphql.CollectedField, obj *ToggleTaskLabelPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -15155,10 +17805,11 @@ func (ec *executionContext) _ToggleTaskLabelPayload_active(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ToggleTaskLabelPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ToggleTaskLabelPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15189,10 +17840,11 @@ func (ec *executionContext) _ToggleTaskLabelPayload_task(ctx context.Context, fi
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "ToggleTaskLabelPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "ToggleTaskLabelPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15223,10 +17875,11 @@ func (ec *executionContext) _UpdateProjectMemberRolePayload_ok(ctx context.Conte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateProjectMemberRolePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateProjectMemberRolePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15257,10 +17910,11 @@ func (ec *executionContext) _UpdateProjectMemberRolePayload_member(ctx context.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateProjectMemberRolePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateProjectMemberRolePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15291,10 +17945,11 @@ func (ec *executionContext) _UpdateTaskChecklistItemLocationPayload_taskChecklis
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskChecklistItemLocationPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskChecklistItemLocationPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15325,10 +17980,11 @@ func (ec *executionContext) _UpdateTaskChecklistItemLocationPayload_prevChecklis
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskChecklistItemLocationPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskChecklistItemLocationPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15359,10 +18015,11 @@ func (ec *executionContext) _UpdateTaskChecklistItemLocationPayload_checklistIte
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskChecklistItemLocationPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskChecklistItemLocationPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15393,10 +18050,11 @@ func (ec *executionContext) _UpdateTaskChecklistLocationPayload_checklist(ctx co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskChecklistLocationPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskChecklistLocationPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15427,10 +18085,11 @@ func (ec *executionContext) _UpdateTaskCommentPayload_taskID(ctx context.Context
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskCommentPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskCommentPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15461,10 +18120,11 @@ func (ec *executionContext) _UpdateTaskCommentPayload_comment(ctx context.Contex
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskCommentPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskCommentPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15487,6 +18147,41 @@ func (ec *executionContext) _UpdateTaskCommentPayload_comment(ctx context.Contex
 	return ec.marshalNTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTaskComment(ctx, field.Selections, res)
 }
 
+func (ec *executionContext) _UpdateTaskDueDateNotificationsResult_notifications(ctx context.Context, field graphql.CollectedField, obj *UpdateTaskDueDateNotificationsResult) (ret graphql.Marshaler) {
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	fc := &graphql.FieldContext{
+		Object:     "UpdateTaskDueDateNotificationsResult",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
+	}
+
+	ctx = graphql.WithFieldContext(ctx, fc)
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Notifications, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]DueDateNotification)
+	fc.Result = res
+	return ec.marshalNDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationᚄ(ctx, field.Selections, res)
+}
+
 func (ec *executionContext) _UpdateTaskLocationPayload_previousTaskGroupID(ctx context.Context, field graphql.CollectedField, obj *UpdateTaskLocationPayload) (ret graphql.Marshaler) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -15495,10 +18190,11 @@ func (ec *executionContext) _UpdateTaskLocationPayload_previousTaskGroupID(ctx c
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskLocationPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskLocationPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15529,10 +18225,11 @@ func (ec *executionContext) _UpdateTaskLocationPayload_task(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTaskLocationPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTaskLocationPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15563,10 +18260,11 @@ func (ec *executionContext) _UpdateTeamMemberRolePayload_ok(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTeamMemberRolePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTeamMemberRolePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15597,10 +18295,11 @@ func (ec *executionContext) _UpdateTeamMemberRolePayload_teamID(ctx context.Cont
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTeamMemberRolePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTeamMemberRolePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15631,10 +18330,11 @@ func (ec *executionContext) _UpdateTeamMemberRolePayload_member(ctx context.Cont
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateTeamMemberRolePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateTeamMemberRolePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15665,10 +18365,11 @@ func (ec *executionContext) _UpdateUserInfoPayload_user(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateUserInfoPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateUserInfoPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15699,10 +18400,11 @@ func (ec *executionContext) _UpdateUserPasswordPayload_ok(ctx context.Context, f
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateUserPasswordPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateUserPasswordPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15733,10 +18435,11 @@ func (ec *executionContext) _UpdateUserPasswordPayload_user(ctx context.Context,
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateUserPasswordPayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateUserPasswordPayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15767,10 +18470,11 @@ func (ec *executionContext) _UpdateUserRolePayload_user(ctx context.Context, fie
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UpdateUserRolePayload",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UpdateUserRolePayload",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15801,10 +18505,11 @@ func (ec *executionContext) _UserAccount_id(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15835,10 +18540,11 @@ func (ec *executionContext) _UserAccount_email(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15869,10 +18575,11 @@ func (ec *executionContext) _UserAccount_createdAt(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15903,10 +18610,11 @@ func (ec *executionContext) _UserAccount_fullName(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15937,10 +18645,11 @@ func (ec *executionContext) _UserAccount_initials(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -15971,10 +18680,11 @@ func (ec *executionContext) _UserAccount_bio(ctx context.Context, field graphql.
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16005,10 +18715,11 @@ func (ec *executionContext) _UserAccount_role(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16039,10 +18750,11 @@ func (ec *executionContext) _UserAccount_username(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16073,10 +18785,11 @@ func (ec *executionContext) _UserAccount_profileIcon(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16107,10 +18820,11 @@ func (ec *executionContext) _UserAccount_owned(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16141,10 +18855,11 @@ func (ec *executionContext) _UserAccount_member(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "UserAccount",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "UserAccount",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: true,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16175,10 +18890,11 @@ func (ec *executionContext) ___Directive_name(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Directive",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Directive",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16209,10 +18925,11 @@ func (ec *executionContext) ___Directive_description(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Directive",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Directive",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16240,10 +18957,11 @@ func (ec *executionContext) ___Directive_locations(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Directive",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Directive",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16274,10 +18992,11 @@ func (ec *executionContext) ___Directive_args(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Directive",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Directive",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16308,10 +19027,11 @@ func (ec *executionContext) ___EnumValue_name(ctx context.Context, field graphql
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__EnumValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__EnumValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16342,10 +19062,11 @@ func (ec *executionContext) ___EnumValue_description(ctx context.Context, field 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__EnumValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__EnumValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16373,10 +19094,11 @@ func (ec *executionContext) ___EnumValue_isDeprecated(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__EnumValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__EnumValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16407,10 +19129,11 @@ func (ec *executionContext) ___EnumValue_deprecationReason(ctx context.Context, 
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__EnumValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__EnumValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16438,10 +19161,11 @@ func (ec *executionContext) ___Field_name(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Field",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Field",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16472,10 +19196,11 @@ func (ec *executionContext) ___Field_description(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Field",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Field",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16503,10 +19228,11 @@ func (ec *executionContext) ___Field_args(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Field",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Field",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16537,10 +19263,11 @@ func (ec *executionContext) ___Field_type(ctx context.Context, field graphql.Col
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Field",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__Field",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16571,10 +19298,11 @@ func (ec *executionContext) ___Field_isDeprecated(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Field",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Field",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16605,10 +19333,11 @@ func (ec *executionContext) ___Field_deprecationReason(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Field",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Field",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16636,10 +19365,11 @@ func (ec *executionContext) ___InputValue_name(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__InputValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__InputValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16670,10 +19400,11 @@ func (ec *executionContext) ___InputValue_description(ctx context.Context, field
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__InputValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__InputValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16701,10 +19432,11 @@ func (ec *executionContext) ___InputValue_type(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__InputValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__InputValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16735,10 +19467,11 @@ func (ec *executionContext) ___InputValue_defaultValue(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__InputValue",
-		Field:    field,
-		Args:     nil,
-		IsMethod: false,
+		Object:     "__InputValue",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   false,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16766,10 +19499,11 @@ func (ec *executionContext) ___Schema_types(ctx context.Context, field graphql.C
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Schema",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Schema",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16800,10 +19534,11 @@ func (ec *executionContext) ___Schema_queryType(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Schema",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Schema",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16834,10 +19569,11 @@ func (ec *executionContext) ___Schema_mutationType(ctx context.Context, field gr
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Schema",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Schema",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16865,10 +19601,11 @@ func (ec *executionContext) ___Schema_subscriptionType(ctx context.Context, fiel
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Schema",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Schema",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16896,10 +19633,11 @@ func (ec *executionContext) ___Schema_directives(ctx context.Context, field grap
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Schema",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Schema",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16930,10 +19668,11 @@ func (ec *executionContext) ___Type_kind(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16964,10 +19703,11 @@ func (ec *executionContext) ___Type_name(ctx context.Context, field graphql.Coll
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -16995,10 +19735,11 @@ func (ec *executionContext) ___Type_description(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17026,10 +19767,11 @@ func (ec *executionContext) ___Type_fields(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17064,10 +19806,11 @@ func (ec *executionContext) ___Type_interfaces(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17095,10 +19838,11 @@ func (ec *executionContext) ___Type_possibleTypes(ctx context.Context, field gra
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17126,10 +19870,11 @@ func (ec *executionContext) ___Type_enumValues(ctx context.Context, field graphq
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17164,10 +19909,11 @@ func (ec *executionContext) ___Type_inputFields(ctx context.Context, field graph
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17195,10 +19941,11 @@ func (ec *executionContext) ___Type_ofType(ctx context.Context, field graphql.Co
 		}
 	}()
 	fc := &graphql.FieldContext{
-		Object:   "__Type",
-		Field:    field,
-		Args:     nil,
-		IsMethod: true,
+		Object:     "__Type",
+		Field:      field,
+		Args:       nil,
+		IsMethod:   true,
+		IsResolver: false,
 	}
 
 	ctx = graphql.WithFieldContext(ctx, fc)
@@ -17230,12 +19977,16 @@ func (ec *executionContext) unmarshalInputAddTaskLabelInput(ctx context.Context,
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "projectLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectLabelID"))
 			it.ProjectLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17254,12 +20005,16 @@ func (ec *executionContext) unmarshalInputAssignTaskInput(ctx context.Context, o
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17278,18 +20033,24 @@ func (ec *executionContext) unmarshalInputCreateTaskChecklist(ctx context.Contex
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -17308,18 +20069,24 @@ func (ec *executionContext) unmarshalInputCreateTaskChecklistItem(ctx context.Co
 		switch k {
 		case "taskChecklistID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistID"))
 			it.TaskChecklistID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -17338,13 +20105,53 @@ func (ec *executionContext) unmarshalInputCreateTaskComment(ctx context.Context,
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "message":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("message"))
 			it.Message, err = ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputCreateTaskDueDateNotification(ctx context.Context, obj interface{}) (CreateTaskDueDateNotification, error) {
+	var it CreateTaskDueDateNotification
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "taskID":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
+			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "period":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("period"))
+			it.Period, err = ec.unmarshalNInt2int(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "duration":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("duration"))
+			it.Duration, err = ec.unmarshalNDueDateNotificationDuration2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationDuration(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17362,12 +20169,16 @@ func (ec *executionContext) unmarshalInputCreateTeamMember(ctx context.Context, 
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17386,12 +20197,16 @@ func (ec *executionContext) unmarshalInputDeleteInvitedProjectMember(ctx context
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "email":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("email"))
 			it.Email, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -17410,6 +20225,8 @@ func (ec *executionContext) unmarshalInputDeleteInvitedUserAccount(ctx context.C
 		switch k {
 		case "invitedUserID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("invitedUserID"))
 			it.InvitedUserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17428,6 +20245,8 @@ func (ec *executionContext) unmarshalInputDeleteProject(ctx context.Context, obj
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17446,6 +20265,8 @@ func (ec *executionContext) unmarshalInputDeleteProjectLabel(ctx context.Context
 		switch k {
 		case "projectLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectLabelID"))
 			it.ProjectLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17464,12 +20285,16 @@ func (ec *executionContext) unmarshalInputDeleteProjectMember(ctx context.Contex
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17488,6 +20313,8 @@ func (ec *executionContext) unmarshalInputDeleteTaskChecklist(ctx context.Contex
 		switch k {
 		case "taskChecklistID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistID"))
 			it.TaskChecklistID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17506,6 +20333,8 @@ func (ec *executionContext) unmarshalInputDeleteTaskChecklistItem(ctx context.Co
 		switch k {
 		case "taskChecklistItemID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistItemID"))
 			it.TaskChecklistItemID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17524,7 +20353,29 @@ func (ec *executionContext) unmarshalInputDeleteTaskComment(ctx context.Context,
 		switch k {
 		case "commentID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("commentID"))
 			it.CommentID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputDeleteTaskDueDateNotification(ctx context.Context, obj interface{}) (DeleteTaskDueDateNotification, error) {
+	var it DeleteTaskDueDateNotification
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "id":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
+			it.ID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17542,6 +20393,8 @@ func (ec *executionContext) unmarshalInputDeleteTaskGroupInput(ctx context.Conte
 		switch k {
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17560,6 +20413,8 @@ func (ec *executionContext) unmarshalInputDeleteTaskGroupTasks(ctx context.Conte
 		switch k {
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17578,6 +20433,8 @@ func (ec *executionContext) unmarshalInputDeleteTaskInput(ctx context.Context, o
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17596,6 +20453,8 @@ func (ec *executionContext) unmarshalInputDeleteTeam(ctx context.Context, obj in
 		switch k {
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17614,18 +20473,24 @@ func (ec *executionContext) unmarshalInputDeleteTeamMember(ctx context.Context, 
 		switch k {
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "newOwnerID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("newOwnerID"))
 			it.NewOwnerID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17644,12 +20509,16 @@ func (ec *executionContext) unmarshalInputDeleteUserAccount(ctx context.Context,
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "newOwnerID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("newOwnerID"))
 			it.NewOwnerID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17668,24 +20537,32 @@ func (ec *executionContext) unmarshalInputDuplicateTaskGroup(ctx context.Context
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -17704,7 +20581,17 @@ func (ec *executionContext) unmarshalInputFindProject(ctx context.Context, obj i
 		switch k {
 		case "projectID":
 			var err error
-			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
+			it.ProjectID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "projectShortID":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectShortID"))
+			it.ProjectShortID, err = ec.unmarshalOString2ᚖstring(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17722,7 +20609,17 @@ func (ec *executionContext) unmarshalInputFindTask(ctx context.Context, obj inte
 		switch k {
 		case "taskID":
 			var err error
-			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
+			it.TaskID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "taskShortID":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskShortID"))
+			it.TaskShortID, err = ec.unmarshalOString2ᚖstring(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17740,6 +20637,8 @@ func (ec *executionContext) unmarshalInputFindTeam(ctx context.Context, obj inte
 		switch k {
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17758,6 +20657,8 @@ func (ec *executionContext) unmarshalInputFindUser(ctx context.Context, obj inte
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17776,12 +20677,16 @@ func (ec *executionContext) unmarshalInputInviteProjectMembers(ctx context.Conte
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "members":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("members"))
 			it.Members, err = ec.unmarshalNMemberInvite2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberInviteᚄ(ctx, v)
 			if err != nil {
 				return it, err
@@ -17800,6 +20705,8 @@ func (ec *executionContext) unmarshalInputLogoutUser(ctx context.Context, obj in
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -17818,12 +20725,16 @@ func (ec *executionContext) unmarshalInputMemberInvite(ctx context.Context, obj 
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "email":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("email"))
 			it.Email, err = ec.unmarshalOString2ᚖstring(ctx, v)
 			if err != nil {
 				return it, err
@@ -17842,13 +20753,45 @@ func (ec *executionContext) unmarshalInputMemberSearchFilter(ctx context.Context
 		switch k {
 		case "searchFilter":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("searchFilter"))
 			it.SearchFilter, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputMyTasks(ctx context.Context, obj interface{}) (MyTasks, error) {
+	var it MyTasks
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "status":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("status"))
+			it.Status, err = ec.unmarshalNMyTasksStatus2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksStatus(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "sort":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("sort"))
+			it.Sort, err = ec.unmarshalNMyTasksSort2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksSort(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17866,12 +20809,16 @@ func (ec *executionContext) unmarshalInputNewProject(ctx context.Context, obj in
 		switch k {
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -17890,37 +20837,25 @@ func (ec *executionContext) unmarshalInputNewProjectLabel(ctx context.Context, o
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "labelColorID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("labelColorID"))
 			it.LabelColorID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalOString2ᚖstring(ctx, v)
-			if err != nil {
-				return it, err
-			}
-		}
-	}
-
-	return it, nil
-}
-
-func (ec *executionContext) unmarshalInputNewRefreshToken(ctx context.Context, obj interface{}) (NewRefreshToken, error) {
-	var it NewRefreshToken
-	var asMap = obj.(map[string]interface{})
-
-	for k, v := range asMap {
-		switch k {
-		case "userID":
-			var err error
-			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17938,19 +20873,33 @@ func (ec *executionContext) unmarshalInputNewTask(ctx context.Context, obj inter
 		switch k {
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "assigned":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("assigned"))
+			it.Assigned, err = ec.unmarshalOUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUIDᚄ(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -17968,18 +20917,24 @@ func (ec *executionContext) unmarshalInputNewTaskGroup(ctx context.Context, obj 
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -17998,12 +20953,16 @@ func (ec *executionContext) unmarshalInputNewTaskGroupLocation(ctx context.Conte
 		switch k {
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -18022,18 +20981,24 @@ func (ec *executionContext) unmarshalInputNewTaskLocation(ctx context.Context, o
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -18052,12 +21017,16 @@ func (ec *executionContext) unmarshalInputNewTeam(ctx context.Context, obj inter
 		switch k {
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "organizationID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("organizationID"))
 			it.OrganizationID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -18076,37 +21045,105 @@ func (ec *executionContext) unmarshalInputNewUserAccount(ctx context.Context, ob
 		switch k {
 		case "username":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("username"))
 			it.Username, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "email":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("email"))
 			it.Email, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "fullName":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("fullName"))
 			it.FullName, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "initials":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("initials"))
 			it.Initials, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "password":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("password"))
 			it.Password, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "roleCode":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("roleCode"))
 			it.RoleCode, err = ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputNotificationToggleReadInput(ctx context.Context, obj interface{}) (NotificationToggleReadInput, error) {
+	var it NotificationToggleReadInput
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "notifiedID":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("notifiedID"))
+			it.NotifiedID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputNotifiedInput(ctx context.Context, obj interface{}) (NotifiedInput, error) {
+	var it NotifiedInput
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "limit":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("limit"))
+			it.Limit, err = ec.unmarshalNInt2int(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "cursor":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("cursor"))
+			it.Cursor, err = ec.unmarshalOString2ᚖstring(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "filter":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("filter"))
+			it.Filter, err = ec.unmarshalNNotificationFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationFilter(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -18124,6 +21161,8 @@ func (ec *executionContext) unmarshalInputProjectsFilter(ctx context.Context, ob
 		switch k {
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -18142,12 +21181,16 @@ func (ec *executionContext) unmarshalInputRemoveTaskLabelInput(ctx context.Conte
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "taskLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskLabelID"))
 			it.TaskLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -18166,12 +21209,16 @@ func (ec *executionContext) unmarshalInputSetTaskChecklistItemComplete(ctx conte
 		switch k {
 		case "taskChecklistItemID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistItemID"))
 			it.TaskChecklistItemID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "complete":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("complete"))
 			it.Complete, err = ec.unmarshalNBoolean2bool(ctx, v)
 			if err != nil {
 				return it, err
@@ -18190,12 +21237,16 @@ func (ec *executionContext) unmarshalInputSetTaskComplete(ctx context.Context, o
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "complete":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("complete"))
 			it.Complete, err = ec.unmarshalNBoolean2bool(ctx, v)
 			if err != nil {
 				return it, err
@@ -18214,12 +21265,16 @@ func (ec *executionContext) unmarshalInputSortTaskGroup(ctx context.Context, obj
 		switch k {
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "tasks":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("tasks"))
 			it.Tasks, err = ec.unmarshalNTaskPositionUpdate2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTaskPositionUpdateᚄ(ctx, v)
 			if err != nil {
 				return it, err
@@ -18238,13 +21293,45 @@ func (ec *executionContext) unmarshalInputTaskPositionUpdate(ctx context.Context
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputToggleProjectVisibility(ctx context.Context, obj interface{}) (ToggleProjectVisibility, error) {
+	var it ToggleProjectVisibility
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "projectID":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
+			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "isPublic":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("isPublic"))
+			it.IsPublic, err = ec.unmarshalNBoolean2bool(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -18262,13 +21349,37 @@ func (ec *executionContext) unmarshalInputToggleTaskLabelInput(ctx context.Conte
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "projectLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectLabelID"))
 			it.ProjectLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputToggleTaskWatch(ctx context.Context, obj interface{}) (ToggleTaskWatch, error) {
+	var it ToggleTaskWatch
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "taskID":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
+			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -18286,12 +21397,16 @@ func (ec *executionContext) unmarshalInputUnassignTaskInput(ctx context.Context,
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -18310,18 +21425,24 @@ func (ec *executionContext) unmarshalInputUpdateProjectLabel(ctx context.Context
 		switch k {
 		case "projectLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectLabelID"))
 			it.ProjectLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "labelColorID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("labelColorID"))
 			it.LabelColorID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18340,12 +21461,16 @@ func (ec *executionContext) unmarshalInputUpdateProjectLabelColor(ctx context.Co
 		switch k {
 		case "projectLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectLabelID"))
 			it.ProjectLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "labelColorID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("labelColorID"))
 			it.LabelColorID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
@@ -18364,12 +21489,16 @@ func (ec *executionContext) unmarshalInputUpdateProjectLabelName(ctx context.Con
 		switch k {
 		case "projectLabelID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectLabelID"))
 			it.ProjectLabelID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18388,18 +21517,24 @@ func (ec *executionContext) unmarshalInputUpdateProjectMemberRole(ctx context.Co
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "roleCode":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("roleCode"))
 			it.RoleCode, err = ec.unmarshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, v)
 			if err != nil {
 				return it, err
@@ -18418,12 +21553,16 @@ func (ec *executionContext) unmarshalInputUpdateProjectName(ctx context.Context,
 		switch k {
 		case "projectID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("projectID"))
 			it.ProjectID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18442,18 +21581,24 @@ func (ec *executionContext) unmarshalInputUpdateTaskChecklistItemLocation(ctx co
 		switch k {
 		case "taskChecklistID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistID"))
 			it.TaskChecklistID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "taskChecklistItemID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistItemID"))
 			it.TaskChecklistItemID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -18472,12 +21617,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskChecklistItemName(ctx contex
 		switch k {
 		case "taskChecklistItemID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistItemID"))
 			it.TaskChecklistItemID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18496,12 +21645,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskChecklistLocation(ctx contex
 		switch k {
 		case "taskChecklistID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistID"))
 			it.TaskChecklistID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "position":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("position"))
 			it.Position, err = ec.unmarshalNFloat2float64(ctx, v)
 			if err != nil {
 				return it, err
@@ -18520,12 +21673,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskChecklistName(ctx context.Co
 		switch k {
 		case "taskChecklistID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskChecklistID"))
 			it.TaskChecklistID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18544,12 +21701,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskComment(ctx context.Context,
 		switch k {
 		case "commentID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("commentID"))
 			it.CommentID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "message":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("message"))
 			it.Message, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18568,12 +21729,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskDescriptionInput(ctx context
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "description":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("description"))
 			it.Description, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18592,13 +21757,61 @@ func (ec *executionContext) unmarshalInputUpdateTaskDueDate(ctx context.Context,
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "hasTime":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("hasTime"))
+			it.HasTime, err = ec.unmarshalNBoolean2bool(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "dueDate":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("dueDate"))
 			it.DueDate, err = ec.unmarshalOTime2ᚖtimeᚐTime(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		}
+	}
+
+	return it, nil
+}
+
+func (ec *executionContext) unmarshalInputUpdateTaskDueDateNotification(ctx context.Context, obj interface{}) (UpdateTaskDueDateNotification, error) {
+	var it UpdateTaskDueDateNotification
+	var asMap = obj.(map[string]interface{})
+
+	for k, v := range asMap {
+		switch k {
+		case "id":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
+			it.ID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "period":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("period"))
+			it.Period, err = ec.unmarshalNInt2int(ctx, v)
+			if err != nil {
+				return it, err
+			}
+		case "duration":
+			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("duration"))
+			it.Duration, err = ec.unmarshalNDueDateNotificationDuration2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationDuration(ctx, v)
 			if err != nil {
 				return it, err
 			}
@@ -18616,12 +21829,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskGroupName(ctx context.Contex
 		switch k {
 		case "taskGroupID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskGroupID"))
 			it.TaskGroupID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18640,12 +21857,16 @@ func (ec *executionContext) unmarshalInputUpdateTaskName(ctx context.Context, ob
 		switch k {
 		case "taskID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("taskID"))
 			it.TaskID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18664,18 +21885,24 @@ func (ec *executionContext) unmarshalInputUpdateTeamMemberRole(ctx context.Conte
 		switch k {
 		case "teamID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("teamID"))
 			it.TeamID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "roleCode":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("roleCode"))
 			it.RoleCode, err = ec.unmarshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, v)
 			if err != nil {
 				return it, err
@@ -18694,24 +21921,32 @@ func (ec *executionContext) unmarshalInputUpdateUserInfo(ctx context.Context, ob
 		switch k {
 		case "name":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
 			it.Name, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "initials":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("initials"))
 			it.Initials, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "email":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("email"))
 			it.Email, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "bio":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("bio"))
 			it.Bio, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18730,12 +21965,16 @@ func (ec *executionContext) unmarshalInputUpdateUserPassword(ctx context.Context
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "password":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("password"))
 			it.Password, err = ec.unmarshalNString2string(ctx, v)
 			if err != nil {
 				return it, err
@@ -18754,12 +21993,16 @@ func (ec *executionContext) unmarshalInputUpdateUserRole(ctx context.Context, ob
 		switch k {
 		case "userID":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("userID"))
 			it.UserID, err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
 			if err != nil {
 				return it, err
 			}
 		case "roleCode":
 			var err error
+
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("roleCode"))
 			it.RoleCode, err = ec.unmarshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx, v)
 			if err != nil {
 				return it, err
@@ -18844,6 +22087,38 @@ func (ec *executionContext) _ChecklistBadge(ctx context.Context, sel ast.Selecti
 	return out
 }
 
+var commentsBadgeImplementors = []string{"CommentsBadge"}
+
+func (ec *executionContext) _CommentsBadge(ctx context.Context, sel ast.SelectionSet, obj *CommentsBadge) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, commentsBadgeImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("CommentsBadge")
+		case "total":
+			out.Values[i] = ec._CommentsBadge_total(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "unread":
+			out.Values[i] = ec._CommentsBadge_unread(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
 var createTaskCommentPayloadImplementors = []string{"CreateTaskCommentPayload"}
 
 func (ec *executionContext) _CreateTaskCommentPayload(ctx context.Context, sel ast.SelectionSet, obj *CreateTaskCommentPayload) graphql.Marshaler {
@@ -18862,6 +22137,33 @@ func (ec *executionContext) _CreateTaskCommentPayload(ctx context.Context, sel a
 			}
 		case "comment":
 			out.Values[i] = ec._CreateTaskCommentPayload_comment(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var createTaskDueDateNotificationsResultImplementors = []string{"CreateTaskDueDateNotificationsResult"}
+
+func (ec *executionContext) _CreateTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, obj *CreateTaskDueDateNotificationsResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, createTaskDueDateNotificationsResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("CreateTaskDueDateNotificationsResult")
+		case "notifications":
+			out.Values[i] = ec._CreateTaskDueDateNotificationsResult_notifications(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -19164,6 +22466,33 @@ func (ec *executionContext) _DeleteTaskCommentPayload(ctx context.Context, sel a
 	return out
 }
 
+var deleteTaskDueDateNotificationsResultImplementors = []string{"DeleteTaskDueDateNotificationsResult"}
+
+func (ec *executionContext) _DeleteTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, obj *DeleteTaskDueDateNotificationsResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, deleteTaskDueDateNotificationsResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("DeleteTaskDueDateNotificationsResult")
+		case "notifications":
+			out.Values[i] = ec._DeleteTaskDueDateNotificationsResult_notifications(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
 var deleteTaskGroupPayloadImplementors = []string{"DeleteTaskGroupPayload"}
 
 func (ec *executionContext) _DeleteTaskGroupPayload(ctx context.Context, sel ast.SelectionSet, obj *DeleteTaskGroupPayload) graphql.Marshaler {
@@ -19366,6 +22695,72 @@ func (ec *executionContext) _DeleteUserAccountPayload(ctx context.Context, sel a
 	return out
 }
 
+var dueDateImplementors = []string{"DueDate"}
+
+func (ec *executionContext) _DueDate(ctx context.Context, sel ast.SelectionSet, obj *DueDate) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, dueDateImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("DueDate")
+		case "at":
+			out.Values[i] = ec._DueDate_at(ctx, field, obj)
+		case "notifications":
+			out.Values[i] = ec._DueDate_notifications(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var dueDateNotificationImplementors = []string{"DueDateNotification"}
+
+func (ec *executionContext) _DueDateNotification(ctx context.Context, sel ast.SelectionSet, obj *DueDateNotification) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, dueDateNotificationImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("DueDateNotification")
+		case "id":
+			out.Values[i] = ec._DueDateNotification_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "period":
+			out.Values[i] = ec._DueDateNotification_period(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "duration":
+			out.Values[i] = ec._DueDateNotification_duration(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
 var duplicateTaskGroupPayloadImplementors = []string{"DuplicateTaskGroupPayload"}
 
 func (ec *executionContext) _DuplicateTaskGroupPayload(ctx context.Context, sel ast.SelectionSet, obj *DuplicateTaskGroupPayload) graphql.Marshaler {
@@ -19379,6 +22774,33 @@ func (ec *executionContext) _DuplicateTaskGroupPayload(ctx context.Context, sel 
 			out.Values[i] = graphql.MarshalString("DuplicateTaskGroupPayload")
 		case "taskGroup":
 			out.Values[i] = ec._DuplicateTaskGroupPayload_taskGroup(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var hasUnreadNotificationsResultImplementors = []string{"HasUnreadNotificationsResult"}
+
+func (ec *executionContext) _HasUnreadNotificationsResult(ctx context.Context, sel ast.SelectionSet, obj *HasUnreadNotificationsResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, hasUnreadNotificationsResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("HasUnreadNotificationsResult")
+		case "unread":
+			out.Values[i] = ec._HasUnreadNotificationsResult_unread(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -19576,6 +22998,8 @@ func (ec *executionContext) _MePayload(ctx context.Context, sel ast.SelectionSet
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
+		case "organization":
+			out.Values[i] = ec._MePayload_organization(ctx, field, obj)
 		case "teamRoles":
 			out.Values[i] = ec._MePayload_teamRoles(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -19740,18 +23164,13 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 		switch field.Name {
 		case "__typename":
 			out.Values[i] = graphql.MarshalString("Mutation")
-		case "createProject":
-			out.Values[i] = ec._Mutation_createProject(ctx, field)
+		case "notificationToggleRead":
+			out.Values[i] = ec._Mutation_notificationToggleRead(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "deleteProject":
-			out.Values[i] = ec._Mutation_deleteProject(ctx, field)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "updateProjectName":
-			out.Values[i] = ec._Mutation_updateProjectName(ctx, field)
+		case "notificationMarkAllRead":
+			out.Values[i] = ec._Mutation_notificationMarkAllRead(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -19800,48 +23219,23 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "createTask":
-			out.Values[i] = ec._Mutation_createTask(ctx, field)
+		case "createProject":
+			out.Values[i] = ec._Mutation_createProject(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "deleteTask":
-			out.Values[i] = ec._Mutation_deleteTask(ctx, field)
+		case "deleteProject":
+			out.Values[i] = ec._Mutation_deleteProject(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "updateTaskDescription":
-			out.Values[i] = ec._Mutation_updateTaskDescription(ctx, field)
+		case "updateProjectName":
+			out.Values[i] = ec._Mutation_updateProjectName(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "updateTaskLocation":
-			out.Values[i] = ec._Mutation_updateTaskLocation(ctx, field)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "updateTaskName":
-			out.Values[i] = ec._Mutation_updateTaskName(ctx, field)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "setTaskComplete":
-			out.Values[i] = ec._Mutation_setTaskComplete(ctx, field)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "updateTaskDueDate":
-			out.Values[i] = ec._Mutation_updateTaskDueDate(ctx, field)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "assignTask":
-			out.Values[i] = ec._Mutation_assignTask(ctx, field)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "unassignTask":
-			out.Values[i] = ec._Mutation_unassignTask(ctx, field)
+		case "toggleProjectVisibility":
+			out.Values[i] = ec._Mutation_toggleProjectVisibility(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -19955,13 +23349,68 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "deleteTeam":
-			out.Values[i] = ec._Mutation_deleteTeam(ctx, field)
+		case "createTask":
+			out.Values[i] = ec._Mutation_createTask(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "createTeam":
-			out.Values[i] = ec._Mutation_createTeam(ctx, field)
+		case "deleteTask":
+			out.Values[i] = ec._Mutation_deleteTask(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "updateTaskDescription":
+			out.Values[i] = ec._Mutation_updateTaskDescription(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "updateTaskLocation":
+			out.Values[i] = ec._Mutation_updateTaskLocation(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "updateTaskName":
+			out.Values[i] = ec._Mutation_updateTaskName(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "setTaskComplete":
+			out.Values[i] = ec._Mutation_setTaskComplete(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "updateTaskDueDate":
+			out.Values[i] = ec._Mutation_updateTaskDueDate(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "toggleTaskWatch":
+			out.Values[i] = ec._Mutation_toggleTaskWatch(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "assignTask":
+			out.Values[i] = ec._Mutation_assignTask(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "unassignTask":
+			out.Values[i] = ec._Mutation_unassignTask(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "createTaskDueDateNotifications":
+			out.Values[i] = ec._Mutation_createTaskDueDateNotifications(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "updateTaskDueDateNotifications":
+			out.Values[i] = ec._Mutation_updateTaskDueDateNotifications(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "deleteTaskDueDateNotifications":
+			out.Values[i] = ec._Mutation_deleteTaskDueDateNotifications(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -19980,8 +23429,13 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "createRefreshToken":
-			out.Values[i] = ec._Mutation_createRefreshToken(ctx, field)
+		case "deleteTeam":
+			out.Values[i] = ec._Mutation_deleteTeam(ctx, field)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "createTeam":
+			out.Values[i] = ec._Mutation_createTeam(ctx, field)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -20036,6 +23490,38 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 	return out
 }
 
+var myTasksPayloadImplementors = []string{"MyTasksPayload"}
+
+func (ec *executionContext) _MyTasksPayload(ctx context.Context, sel ast.SelectionSet, obj *MyTasksPayload) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, myTasksPayloadImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("MyTasksPayload")
+		case "tasks":
+			out.Values[i] = ec._MyTasksPayload_tasks(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "projects":
+			out.Values[i] = ec._MyTasksPayload_projects(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
 var notificationImplementors = []string{"Notification"}
 
 func (ec *executionContext) _Notification(ctx context.Context, sel ast.SelectionSet, obj *db.Notification) graphql.Marshaler {
@@ -20061,20 +23547,6 @@ func (ec *executionContext) _Notification(ctx context.Context, sel ast.Selection
 				}
 				return res
 			})
-		case "entity":
-			field := field
-			out.Concurrently(i, func() (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Notification_entity(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&invalids, 1)
-				}
-				return res
-			})
 		case "actionType":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
@@ -20089,7 +23561,7 @@ func (ec *executionContext) _Notification(ctx context.Context, sel ast.Selection
 				}
 				return res
 			})
-		case "actor":
+		case "causedBy":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
 				defer func() {
@@ -20097,17 +23569,23 @@ func (ec *executionContext) _Notification(ctx context.Context, sel ast.Selection
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Notification_actor(ctx, field, obj)
+				res = ec._Notification_causedBy(ctx, field, obj)
+				return res
+			})
+		case "data":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Notification_data(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&invalids, 1)
 				}
 				return res
 			})
-		case "read":
-			out.Values[i] = ec._Notification_read(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				atomic.AddUint32(&invalids, 1)
-			}
 		case "createdAt":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
@@ -20133,29 +23611,29 @@ func (ec *executionContext) _Notification(ctx context.Context, sel ast.Selection
 	return out
 }
 
-var notificationActorImplementors = []string{"NotificationActor"}
+var notificationCausedByImplementors = []string{"NotificationCausedBy"}
 
-func (ec *executionContext) _NotificationActor(ctx context.Context, sel ast.SelectionSet, obj *NotificationActor) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, notificationActorImplementors)
+func (ec *executionContext) _NotificationCausedBy(ctx context.Context, sel ast.SelectionSet, obj *NotificationCausedBy) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, notificationCausedByImplementors)
 
 	out := graphql.NewFieldSet(fields)
 	var invalids uint32
 	for i, field := range fields {
 		switch field.Name {
 		case "__typename":
-			out.Values[i] = graphql.MarshalString("NotificationActor")
+			out.Values[i] = graphql.MarshalString("NotificationCausedBy")
+		case "fullname":
+			out.Values[i] = ec._NotificationCausedBy_fullname(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "username":
+			out.Values[i] = ec._NotificationCausedBy_username(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
 		case "id":
-			out.Values[i] = ec._NotificationActor_id(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "type":
-			out.Values[i] = ec._NotificationActor_type(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				invalids++
-			}
-		case "name":
-			out.Values[i] = ec._NotificationActor_name(ctx, field, obj)
+			out.Values[i] = ec._NotificationCausedBy_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -20170,29 +23648,127 @@ func (ec *executionContext) _NotificationActor(ctx context.Context, sel ast.Sele
 	return out
 }
 
-var notificationEntityImplementors = []string{"NotificationEntity"}
+var notificationDataImplementors = []string{"NotificationData"}
 
-func (ec *executionContext) _NotificationEntity(ctx context.Context, sel ast.SelectionSet, obj *NotificationEntity) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, notificationEntityImplementors)
+func (ec *executionContext) _NotificationData(ctx context.Context, sel ast.SelectionSet, obj *NotificationData) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, notificationDataImplementors)
 
 	out := graphql.NewFieldSet(fields)
 	var invalids uint32
 	for i, field := range fields {
 		switch field.Name {
 		case "__typename":
-			out.Values[i] = graphql.MarshalString("NotificationEntity")
+			out.Values[i] = graphql.MarshalString("NotificationData")
+		case "key":
+			out.Values[i] = ec._NotificationData_key(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "value":
+			out.Values[i] = ec._NotificationData_value(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var notificationMarkAllAsReadResultImplementors = []string{"NotificationMarkAllAsReadResult"}
+
+func (ec *executionContext) _NotificationMarkAllAsReadResult(ctx context.Context, sel ast.SelectionSet, obj *NotificationMarkAllAsReadResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, notificationMarkAllAsReadResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("NotificationMarkAllAsReadResult")
+		case "success":
+			out.Values[i] = ec._NotificationMarkAllAsReadResult_success(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var notifiedImplementors = []string{"Notified"}
+
+func (ec *executionContext) _Notified(ctx context.Context, sel ast.SelectionSet, obj *Notified) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, notifiedImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("Notified")
 		case "id":
-			out.Values[i] = ec._NotificationEntity_id(ctx, field, obj)
+			out.Values[i] = ec._Notified_id(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "type":
-			out.Values[i] = ec._NotificationEntity_type(ctx, field, obj)
+		case "notification":
+			out.Values[i] = ec._Notified_notification(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
-		case "name":
-			out.Values[i] = ec._NotificationEntity_name(ctx, field, obj)
+		case "read":
+			out.Values[i] = ec._Notified_read(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "readAt":
+			out.Values[i] = ec._Notified_readAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var notifiedResultImplementors = []string{"NotifiedResult"}
+
+func (ec *executionContext) _NotifiedResult(ctx context.Context, sel ast.SelectionSet, obj *NotifiedResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, notifiedResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("NotifiedResult")
+		case "totalCount":
+			out.Values[i] = ec._NotifiedResult_totalCount(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "notified":
+			out.Values[i] = ec._NotifiedResult_notified(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "pageInfo":
+			out.Values[i] = ec._NotifiedResult_pageInfo(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -20312,6 +23888,35 @@ func (ec *executionContext) _OwnersList(ctx context.Context, sel ast.SelectionSe
 	return out
 }
 
+var pageInfoImplementors = []string{"PageInfo"}
+
+func (ec *executionContext) _PageInfo(ctx context.Context, sel ast.SelectionSet, obj *PageInfo) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, pageInfoImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("PageInfo")
+		case "endCursor":
+			out.Values[i] = ec._PageInfo_endCursor(ctx, field, obj)
+		case "hasNextPage":
+			out.Values[i] = ec._PageInfo_hasNextPage(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
 var profileIconImplementors = []string{"ProfileIcon"}
 
 func (ec *executionContext) _ProfileIcon(ctx context.Context, sel ast.SelectionSet, obj *ProfileIcon) graphql.Marshaler {
@@ -20365,6 +23970,11 @@ func (ec *executionContext) _Project(ctx context.Context, sel ast.SelectionSet, 
 				}
 				return res
 			})
+		case "shortId":
+			out.Values[i] = ec._Project_shortId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&invalids, 1)
+			}
 		case "createdAt":
 			out.Values[i] = ec._Project_createdAt(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -20423,6 +24033,31 @@ func (ec *executionContext) _Project(ctx context.Context, sel ast.SelectionSet, 
 					}
 				}()
 				res = ec._Project_invitedMembers(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
+		case "publicOn":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Project_publicOn(ctx, field, obj)
+				return res
+			})
+		case "permission":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Project_permission(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&invalids, 1)
 				}
@@ -20519,6 +24154,43 @@ func (ec *executionContext) _ProjectLabel(ctx context.Context, sel ast.Selection
 	return out
 }
 
+var projectPermissionImplementors = []string{"ProjectPermission"}
+
+func (ec *executionContext) _ProjectPermission(ctx context.Context, sel ast.SelectionSet, obj *ProjectPermission) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, projectPermissionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ProjectPermission")
+		case "team":
+			out.Values[i] = ec._ProjectPermission_team(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "project":
+			out.Values[i] = ec._ProjectPermission_project(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "org":
+			out.Values[i] = ec._ProjectPermission_org(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
 var projectRoleImplementors = []string{"ProjectRole"}
 
 func (ec *executionContext) _ProjectRole(ctx context.Context, sel ast.SelectionSet, obj *ProjectRole) graphql.Marshaler {
@@ -20537,6 +24209,38 @@ func (ec *executionContext) _ProjectRole(ctx context.Context, sel ast.SelectionS
 			}
 		case "roleCode":
 			out.Values[i] = ec._ProjectRole_roleCode(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var projectTaskMappingImplementors = []string{"ProjectTaskMapping"}
+
+func (ec *executionContext) _ProjectTaskMapping(ctx context.Context, sel ast.SelectionSet, obj *ProjectTaskMapping) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, projectTaskMappingImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ProjectTaskMapping")
+		case "projectID":
+			out.Values[i] = ec._ProjectTaskMapping_projectID(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "taskID":
+			out.Values[i] = ec._ProjectTaskMapping_taskID(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -20622,34 +24326,6 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 				}
 				return res
 			})
-		case "findProject":
-			field := field
-			out.Concurrently(i, func() (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_findProject(ctx, field)
-				if res == graphql.Null {
-					atomic.AddUint32(&invalids, 1)
-				}
-				return res
-			})
-		case "findTask":
-			field := field
-			out.Concurrently(i, func() (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._Query_findTask(ctx, field)
-				if res == graphql.Null {
-					atomic.AddUint32(&invalids, 1)
-				}
-				return res
-			})
 		case "projects":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
@@ -20659,6 +24335,20 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 					}
 				}()
 				res = ec._Query_projects(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
+		case "teams":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_teams(ctx, field)
 				if res == graphql.Null {
 					atomic.AddUint32(&invalids, 1)
 				}
@@ -20678,7 +24368,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 				}
 				return res
 			})
-		case "teams":
+		case "myTasks":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
 				defer func() {
@@ -20686,7 +24376,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Query_teams(ctx, field)
+				res = ec._Query_myTasks(ctx, field)
 				if res == graphql.Null {
 					atomic.AddUint32(&invalids, 1)
 				}
@@ -20729,9 +24419,6 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 					}
 				}()
 				res = ec._Query_me(ctx, field)
-				if res == graphql.Null {
-					atomic.AddUint32(&invalids, 1)
-				}
 				return res
 			})
 		case "notifications":
@@ -20743,6 +24430,62 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 					}
 				}()
 				res = ec._Query_notifications(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
+		case "notified":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_notified(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
+		case "hasUnreadNotifications":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_hasUnreadNotifications(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
+		case "findProject":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_findProject(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
+		case "findTask":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_findTask(ctx, field)
 				if res == graphql.Null {
 					atomic.AddUint32(&invalids, 1)
 				}
@@ -20766,57 +24509,6 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			out.Values[i] = ec._Query___type(ctx, field)
 		case "__schema":
 			out.Values[i] = ec._Query___schema(ctx, field)
-		default:
-			panic("unknown field " + strconv.Quote(field.Name))
-		}
-	}
-	out.Dispatch()
-	if invalids > 0 {
-		return graphql.Null
-	}
-	return out
-}
-
-var refreshTokenImplementors = []string{"RefreshToken"}
-
-func (ec *executionContext) _RefreshToken(ctx context.Context, sel ast.SelectionSet, obj *db.RefreshToken) graphql.Marshaler {
-	fields := graphql.CollectFields(ec.OperationContext, sel, refreshTokenImplementors)
-
-	out := graphql.NewFieldSet(fields)
-	var invalids uint32
-	for i, field := range fields {
-		switch field.Name {
-		case "__typename":
-			out.Values[i] = graphql.MarshalString("RefreshToken")
-		case "id":
-			field := field
-			out.Concurrently(i, func() (res graphql.Marshaler) {
-				defer func() {
-					if r := recover(); r != nil {
-						ec.Error(ctx, ec.Recover(ctx, r))
-					}
-				}()
-				res = ec._RefreshToken_id(ctx, field, obj)
-				if res == graphql.Null {
-					atomic.AddUint32(&invalids, 1)
-				}
-				return res
-			})
-		case "userId":
-			out.Values[i] = ec._RefreshToken_userId(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				atomic.AddUint32(&invalids, 1)
-			}
-		case "expiresAt":
-			out.Values[i] = ec._RefreshToken_expiresAt(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				atomic.AddUint32(&invalids, 1)
-			}
-		case "createdAt":
-			out.Values[i] = ec._RefreshToken_createdAt(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				atomic.AddUint32(&invalids, 1)
-			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -20892,6 +24584,26 @@ func (ec *executionContext) _SortTaskGroupPayload(ctx context.Context, sel ast.S
 	return out
 }
 
+var subscriptionImplementors = []string{"Subscription"}
+
+func (ec *executionContext) _Subscription(ctx context.Context, sel ast.SelectionSet) func() graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, subscriptionImplementors)
+	ctx = graphql.WithFieldContext(ctx, &graphql.FieldContext{
+		Object: "Subscription",
+	})
+	if len(fields) != 1 {
+		ec.Errorf(ctx, "must subscribe to exactly one stream")
+		return nil
+	}
+
+	switch fields[0].Name {
+	case "notificationAdded":
+		return ec._Subscription_notificationAdded(ctx, fields[0])
+	default:
+		panic("unknown field " + strconv.Quote(fields[0].Name))
+	}
+}
+
 var taskImplementors = []string{"Task"}
 
 func (ec *executionContext) _Task(ctx context.Context, sel ast.SelectionSet, obj *db.Task) graphql.Marshaler {
@@ -20917,6 +24629,11 @@ func (ec *executionContext) _Task(ctx context.Context, sel ast.SelectionSet, obj
 				}
 				return res
 			})
+		case "shortId":
+			out.Values[i] = ec._Task_shortId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&invalids, 1)
+			}
 		case "taskGroup":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
@@ -20957,6 +24674,20 @@ func (ec *executionContext) _Task(ctx context.Context, sel ast.SelectionSet, obj
 				res = ec._Task_description(ctx, field, obj)
 				return res
 			})
+		case "watched":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Task_watched(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
 		case "dueDate":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
@@ -20966,8 +24697,16 @@ func (ec *executionContext) _Task(ctx context.Context, sel ast.SelectionSet, obj
 					}
 				}()
 				res = ec._Task_dueDate(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
 				return res
 			})
+		case "hasTime":
+			out.Values[i] = ec._Task_hasTime(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&invalids, 1)
+			}
 		case "complete":
 			out.Values[i] = ec._Task_complete(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -21207,6 +24946,8 @@ func (ec *executionContext) _TaskBadges(ctx context.Context, sel ast.SelectionSe
 			out.Values[i] = graphql.MarshalString("TaskBadges")
 		case "checklist":
 			out.Values[i] = ec._TaskBadges_checklist(ctx, field, obj)
+		case "comments":
+			out.Values[i] = ec._TaskBadges_comments(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -21593,6 +25334,20 @@ func (ec *executionContext) _Team(ctx context.Context, sel ast.SelectionSet, obj
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&invalids, 1)
 			}
+		case "permission":
+			field := field
+			out.Concurrently(i, func() (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Team_permission(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&invalids, 1)
+				}
+				return res
+			})
 		case "members":
 			field := field
 			out.Concurrently(i, func() (res graphql.Marshaler) {
@@ -21607,6 +25362,38 @@ func (ec *executionContext) _Team(ctx context.Context, sel ast.SelectionSet, obj
 				}
 				return res
 			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var teamPermissionImplementors = []string{"TeamPermission"}
+
+func (ec *executionContext) _TeamPermission(ctx context.Context, sel ast.SelectionSet, obj *TeamPermission) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, teamPermissionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("TeamPermission")
+		case "team":
+			out.Values[i] = ec._TeamPermission_team(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		case "org":
+			out.Values[i] = ec._TeamPermission_org(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -21636,6 +25423,33 @@ func (ec *executionContext) _TeamRole(ctx context.Context, sel ast.SelectionSet,
 			}
 		case "roleCode":
 			out.Values[i] = ec._TeamRole_roleCode(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var toggleProjectVisibilityPayloadImplementors = []string{"ToggleProjectVisibilityPayload"}
+
+func (ec *executionContext) _ToggleProjectVisibilityPayload(ctx context.Context, sel ast.SelectionSet, obj *ToggleProjectVisibilityPayload) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, toggleProjectVisibilityPayloadImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ToggleProjectVisibilityPayload")
+		case "project":
+			out.Values[i] = ec._ToggleProjectVisibilityPayload_project(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -21796,6 +25610,33 @@ func (ec *executionContext) _UpdateTaskCommentPayload(ctx context.Context, sel a
 			}
 		case "comment":
 			out.Values[i] = ec._UpdateTaskCommentPayload_comment(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch()
+	if invalids > 0 {
+		return graphql.Null
+	}
+	return out
+}
+
+var updateTaskDueDateNotificationsResultImplementors = []string{"UpdateTaskDueDateNotificationsResult"}
+
+func (ec *executionContext) _UpdateTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, obj *UpdateTaskDueDateNotificationsResult) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, updateTaskDueDateNotificationsResultImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	var invalids uint32
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("UpdateTaskDueDateNotificationsResult")
+		case "notifications":
+			out.Values[i] = ec._UpdateTaskDueDateNotificationsResult_notifications(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				invalids++
 			}
@@ -22334,7 +26175,8 @@ func (ec *executionContext) ___Type(ctx context.Context, sel ast.SelectionSet, o
 
 func (ec *executionContext) unmarshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx context.Context, v interface{}) (ActionLevel, error) {
 	var res ActionLevel
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNActionLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionLevel(ctx context.Context, sel ast.SelectionSet, v ActionLevel) graphql.Marshaler {
@@ -22343,7 +26185,8 @@ func (ec *executionContext) marshalNActionLevel2githubᚗcomᚋjordanknottᚋtas
 
 func (ec *executionContext) unmarshalNActionType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionType(ctx context.Context, v interface{}) (ActionType, error) {
 	var res ActionType
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNActionType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActionType(ctx context.Context, sel ast.SelectionSet, v ActionType) graphql.Marshaler {
@@ -22352,24 +26195,17 @@ func (ec *executionContext) marshalNActionType2githubᚗcomᚋjordanknottᚋtask
 
 func (ec *executionContext) unmarshalNActivityType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActivityType(ctx context.Context, v interface{}) (ActivityType, error) {
 	var res ActivityType
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNActivityType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActivityType(ctx context.Context, sel ast.SelectionSet, v ActivityType) graphql.Marshaler {
 	return v
 }
 
-func (ec *executionContext) unmarshalNActorType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActorType(ctx context.Context, v interface{}) (ActorType, error) {
-	var res ActorType
-	return res, res.UnmarshalGQL(v)
-}
-
-func (ec *executionContext) marshalNActorType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐActorType(ctx context.Context, sel ast.SelectionSet, v ActorType) graphql.Marshaler {
-	return v
-}
-
 func (ec *executionContext) unmarshalNBoolean2bool(ctx context.Context, v interface{}) (bool, error) {
-	return graphql.UnmarshalBoolean(v)
+	res, err := graphql.UnmarshalBoolean(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNBoolean2bool(ctx context.Context, sel ast.SelectionSet, v bool) graphql.Marshaler {
@@ -22397,11 +26233,13 @@ func (ec *executionContext) marshalNCausedBy2ᚖgithubᚗcomᚋjordanknottᚋtas
 }
 
 func (ec *executionContext) unmarshalNCreateTaskChecklist2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskChecklist(ctx context.Context, v interface{}) (CreateTaskChecklist, error) {
-	return ec.unmarshalInputCreateTaskChecklist(ctx, v)
+	res, err := ec.unmarshalInputCreateTaskChecklist(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNCreateTaskChecklistItem2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskChecklistItem(ctx context.Context, v interface{}) (CreateTaskChecklistItem, error) {
-	return ec.unmarshalInputCreateTaskChecklistItem(ctx, v)
+	res, err := ec.unmarshalInputCreateTaskChecklistItem(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNCreateTaskCommentPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskCommentPayload(ctx context.Context, sel ast.SelectionSet, v CreateTaskCommentPayload) graphql.Marshaler {
@@ -22418,8 +26256,49 @@ func (ec *executionContext) marshalNCreateTaskCommentPayload2ᚖgithubᚗcomᚋj
 	return ec._CreateTaskCommentPayload(ctx, sel, v)
 }
 
+func (ec *executionContext) unmarshalNCreateTaskDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotification(ctx context.Context, v interface{}) (CreateTaskDueDateNotification, error) {
+	res, err := ec.unmarshalInputCreateTaskDueDateNotification(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalNCreateTaskDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotificationᚄ(ctx context.Context, v interface{}) ([]CreateTaskDueDateNotification, error) {
+	var vSlice []interface{}
+	if v != nil {
+		if tmp1, ok := v.([]interface{}); ok {
+			vSlice = tmp1
+		} else {
+			vSlice = []interface{}{v}
+		}
+	}
+	var err error
+	res := make([]CreateTaskDueDateNotification, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNCreateTaskDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotification(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNCreateTaskDueDateNotificationsResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, v CreateTaskDueDateNotificationsResult) graphql.Marshaler {
+	return ec._CreateTaskDueDateNotificationsResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNCreateTaskDueDateNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, v *CreateTaskDueDateNotificationsResult) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._CreateTaskDueDateNotificationsResult(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalNCreateTeamMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTeamMember(ctx context.Context, v interface{}) (CreateTeamMember, error) {
-	return ec.unmarshalInputCreateTeamMember(ctx, v)
+	res, err := ec.unmarshalInputCreateTeamMember(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNCreateTeamMemberPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTeamMemberPayload(ctx context.Context, sel ast.SelectionSet, v CreateTeamMemberPayload) graphql.Marshaler {
@@ -22451,7 +26330,8 @@ func (ec *executionContext) marshalNCreatedBy2ᚖgithubᚗcomᚋjordanknottᚋta
 }
 
 func (ec *executionContext) unmarshalNDeleteInvitedProjectMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedProjectMember(ctx context.Context, v interface{}) (DeleteInvitedProjectMember, error) {
-	return ec.unmarshalInputDeleteInvitedProjectMember(ctx, v)
+	res, err := ec.unmarshalInputDeleteInvitedProjectMember(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteInvitedProjectMemberPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedProjectMemberPayload(ctx context.Context, sel ast.SelectionSet, v DeleteInvitedProjectMemberPayload) graphql.Marshaler {
@@ -22469,7 +26349,8 @@ func (ec *executionContext) marshalNDeleteInvitedProjectMemberPayload2ᚖgithub�
 }
 
 func (ec *executionContext) unmarshalNDeleteInvitedUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedUserAccount(ctx context.Context, v interface{}) (DeleteInvitedUserAccount, error) {
-	return ec.unmarshalInputDeleteInvitedUserAccount(ctx, v)
+	res, err := ec.unmarshalInputDeleteInvitedUserAccount(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteInvitedUserAccountPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteInvitedUserAccountPayload(ctx context.Context, sel ast.SelectionSet, v DeleteInvitedUserAccountPayload) graphql.Marshaler {
@@ -22487,15 +26368,18 @@ func (ec *executionContext) marshalNDeleteInvitedUserAccountPayload2ᚖgithubᚗ
 }
 
 func (ec *executionContext) unmarshalNDeleteProject2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProject(ctx context.Context, v interface{}) (DeleteProject, error) {
-	return ec.unmarshalInputDeleteProject(ctx, v)
+	res, err := ec.unmarshalInputDeleteProject(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNDeleteProjectLabel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectLabel(ctx context.Context, v interface{}) (DeleteProjectLabel, error) {
-	return ec.unmarshalInputDeleteProjectLabel(ctx, v)
+	res, err := ec.unmarshalInputDeleteProjectLabel(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNDeleteProjectMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectMember(ctx context.Context, v interface{}) (DeleteProjectMember, error) {
-	return ec.unmarshalInputDeleteProjectMember(ctx, v)
+	res, err := ec.unmarshalInputDeleteProjectMember(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteProjectMemberPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteProjectMemberPayload(ctx context.Context, sel ast.SelectionSet, v DeleteProjectMemberPayload) graphql.Marshaler {
@@ -22527,11 +26411,13 @@ func (ec *executionContext) marshalNDeleteProjectPayload2ᚖgithubᚗcomᚋjorda
 }
 
 func (ec *executionContext) unmarshalNDeleteTaskChecklist2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskChecklist(ctx context.Context, v interface{}) (DeleteTaskChecklist, error) {
-	return ec.unmarshalInputDeleteTaskChecklist(ctx, v)
+	res, err := ec.unmarshalInputDeleteTaskChecklist(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNDeleteTaskChecklistItem2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskChecklistItem(ctx context.Context, v interface{}) (DeleteTaskChecklistItem, error) {
-	return ec.unmarshalInputDeleteTaskChecklistItem(ctx, v)
+	res, err := ec.unmarshalInputDeleteTaskChecklistItem(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteTaskChecklistItemPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskChecklistItemPayload(ctx context.Context, sel ast.SelectionSet, v DeleteTaskChecklistItemPayload) graphql.Marshaler {
@@ -22576,8 +26462,49 @@ func (ec *executionContext) marshalNDeleteTaskCommentPayload2ᚖgithubᚗcomᚋj
 	return ec._DeleteTaskCommentPayload(ctx, sel, v)
 }
 
+func (ec *executionContext) unmarshalNDeleteTaskDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotification(ctx context.Context, v interface{}) (DeleteTaskDueDateNotification, error) {
+	res, err := ec.unmarshalInputDeleteTaskDueDateNotification(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalNDeleteTaskDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotificationᚄ(ctx context.Context, v interface{}) ([]DeleteTaskDueDateNotification, error) {
+	var vSlice []interface{}
+	if v != nil {
+		if tmp1, ok := v.([]interface{}); ok {
+			vSlice = tmp1
+		} else {
+			vSlice = []interface{}{v}
+		}
+	}
+	var err error
+	res := make([]DeleteTaskDueDateNotification, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNDeleteTaskDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotification(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNDeleteTaskDueDateNotificationsResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, v DeleteTaskDueDateNotificationsResult) graphql.Marshaler {
+	return ec._DeleteTaskDueDateNotificationsResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNDeleteTaskDueDateNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, v *DeleteTaskDueDateNotificationsResult) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._DeleteTaskDueDateNotificationsResult(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalNDeleteTaskGroupInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskGroupInput(ctx context.Context, v interface{}) (DeleteTaskGroupInput, error) {
-	return ec.unmarshalInputDeleteTaskGroupInput(ctx, v)
+	res, err := ec.unmarshalInputDeleteTaskGroupInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteTaskGroupPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskGroupPayload(ctx context.Context, sel ast.SelectionSet, v DeleteTaskGroupPayload) graphql.Marshaler {
@@ -22595,7 +26522,8 @@ func (ec *executionContext) marshalNDeleteTaskGroupPayload2ᚖgithubᚗcomᚋjor
 }
 
 func (ec *executionContext) unmarshalNDeleteTaskGroupTasks2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskGroupTasks(ctx context.Context, v interface{}) (DeleteTaskGroupTasks, error) {
-	return ec.unmarshalInputDeleteTaskGroupTasks(ctx, v)
+	res, err := ec.unmarshalInputDeleteTaskGroupTasks(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteTaskGroupTasksPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskGroupTasksPayload(ctx context.Context, sel ast.SelectionSet, v DeleteTaskGroupTasksPayload) graphql.Marshaler {
@@ -22613,7 +26541,8 @@ func (ec *executionContext) marshalNDeleteTaskGroupTasksPayload2ᚖgithubᚗcom�
 }
 
 func (ec *executionContext) unmarshalNDeleteTaskInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskInput(ctx context.Context, v interface{}) (DeleteTaskInput, error) {
-	return ec.unmarshalInputDeleteTaskInput(ctx, v)
+	res, err := ec.unmarshalInputDeleteTaskInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteTaskPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskPayload(ctx context.Context, sel ast.SelectionSet, v DeleteTaskPayload) graphql.Marshaler {
@@ -22631,11 +26560,13 @@ func (ec *executionContext) marshalNDeleteTaskPayload2ᚖgithubᚗcomᚋjordankn
 }
 
 func (ec *executionContext) unmarshalNDeleteTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeam(ctx context.Context, v interface{}) (DeleteTeam, error) {
-	return ec.unmarshalInputDeleteTeam(ctx, v)
+	res, err := ec.unmarshalInputDeleteTeam(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNDeleteTeamMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeamMember(ctx context.Context, v interface{}) (DeleteTeamMember, error) {
-	return ec.unmarshalInputDeleteTeamMember(ctx, v)
+	res, err := ec.unmarshalInputDeleteTeamMember(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteTeamMemberPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTeamMemberPayload(ctx context.Context, sel ast.SelectionSet, v DeleteTeamMemberPayload) graphql.Marshaler {
@@ -22667,7 +26598,8 @@ func (ec *executionContext) marshalNDeleteTeamPayload2ᚖgithubᚗcomᚋjordankn
 }
 
 func (ec *executionContext) unmarshalNDeleteUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteUserAccount(ctx context.Context, v interface{}) (DeleteUserAccount, error) {
-	return ec.unmarshalInputDeleteUserAccount(ctx, v)
+	res, err := ec.unmarshalInputDeleteUserAccount(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDeleteUserAccountPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteUserAccountPayload(ctx context.Context, sel ast.SelectionSet, v DeleteUserAccountPayload) graphql.Marshaler {
@@ -22684,8 +26616,74 @@ func (ec *executionContext) marshalNDeleteUserAccountPayload2ᚖgithubᚗcomᚋj
 	return ec._DeleteUserAccountPayload(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNDueDate2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDate(ctx context.Context, sel ast.SelectionSet, v DueDate) graphql.Marshaler {
+	return ec._DueDate(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNDueDate2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDate(ctx context.Context, sel ast.SelectionSet, v *DueDate) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._DueDate(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotification(ctx context.Context, sel ast.SelectionSet, v DueDateNotification) graphql.Marshaler {
+	return ec._DueDateNotification(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationᚄ(ctx context.Context, sel ast.SelectionSet, v []DueDateNotification) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotification(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+	return ret
+}
+
+func (ec *executionContext) unmarshalNDueDateNotificationDuration2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationDuration(ctx context.Context, v interface{}) (DueDateNotificationDuration, error) {
+	var res DueDateNotificationDuration
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNDueDateNotificationDuration2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDueDateNotificationDuration(ctx context.Context, sel ast.SelectionSet, v DueDateNotificationDuration) graphql.Marshaler {
+	return v
+}
+
 func (ec *executionContext) unmarshalNDuplicateTaskGroup2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDuplicateTaskGroup(ctx context.Context, v interface{}) (DuplicateTaskGroup, error) {
-	return ec.unmarshalInputDuplicateTaskGroup(ctx, v)
+	res, err := ec.unmarshalInputDuplicateTaskGroup(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNDuplicateTaskGroupPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDuplicateTaskGroupPayload(ctx context.Context, sel ast.SelectionSet, v DuplicateTaskGroupPayload) graphql.Marshaler {
@@ -22702,33 +26700,29 @@ func (ec *executionContext) marshalNDuplicateTaskGroupPayload2ᚖgithubᚗcomᚋ
 	return ec._DuplicateTaskGroupPayload(ctx, sel, v)
 }
 
-func (ec *executionContext) unmarshalNEntityType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐEntityType(ctx context.Context, v interface{}) (EntityType, error) {
-	var res EntityType
-	return res, res.UnmarshalGQL(v)
-}
-
-func (ec *executionContext) marshalNEntityType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐEntityType(ctx context.Context, sel ast.SelectionSet, v EntityType) graphql.Marshaler {
-	return v
-}
-
 func (ec *executionContext) unmarshalNFindProject2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindProject(ctx context.Context, v interface{}) (FindProject, error) {
-	return ec.unmarshalInputFindProject(ctx, v)
+	res, err := ec.unmarshalInputFindProject(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNFindTask2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindTask(ctx context.Context, v interface{}) (FindTask, error) {
-	return ec.unmarshalInputFindTask(ctx, v)
+	res, err := ec.unmarshalInputFindTask(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNFindTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindTeam(ctx context.Context, v interface{}) (FindTeam, error) {
-	return ec.unmarshalInputFindTeam(ctx, v)
+	res, err := ec.unmarshalInputFindTeam(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNFindUser2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐFindUser(ctx context.Context, v interface{}) (FindUser, error) {
-	return ec.unmarshalInputFindUser(ctx, v)
+	res, err := ec.unmarshalInputFindUser(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNFloat2float64(ctx context.Context, v interface{}) (float64, error) {
-	return graphql.UnmarshalFloat(v)
+	res, err := graphql.UnmarshalFloat(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNFloat2float64(ctx context.Context, sel ast.SelectionSet, v float64) graphql.Marshaler {
@@ -22741,8 +26735,23 @@ func (ec *executionContext) marshalNFloat2float64(ctx context.Context, sel ast.S
 	return res
 }
 
+func (ec *executionContext) marshalNHasUnreadNotificationsResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐHasUnreadNotificationsResult(ctx context.Context, sel ast.SelectionSet, v HasUnreadNotificationsResult) graphql.Marshaler {
+	return ec._HasUnreadNotificationsResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNHasUnreadNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐHasUnreadNotificationsResult(ctx context.Context, sel ast.SelectionSet, v *HasUnreadNotificationsResult) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._HasUnreadNotificationsResult(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, v interface{}) (uuid.UUID, error) {
-	return UnmarshalUUID(v)
+	res, err := UnmarshalUUID(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, sel ast.SelectionSet, v uuid.UUID) graphql.Marshaler {
@@ -22756,7 +26765,8 @@ func (ec *executionContext) marshalNID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx c
 }
 
 func (ec *executionContext) unmarshalNInt2int(ctx context.Context, v interface{}) (int, error) {
-	return graphql.UnmarshalInt(v)
+	res, err := graphql.UnmarshalInt(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNInt2int(ctx context.Context, sel ast.SelectionSet, v int) graphql.Marshaler {
@@ -22770,7 +26780,8 @@ func (ec *executionContext) marshalNInt2int(ctx context.Context, sel ast.Selecti
 }
 
 func (ec *executionContext) unmarshalNInviteProjectMembers2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐInviteProjectMembers(ctx context.Context, v interface{}) (InviteProjectMembers, error) {
-	return ec.unmarshalInputInviteProjectMembers(ctx, v)
+	res, err := ec.unmarshalInputInviteProjectMembers(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNInviteProjectMembersPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐInviteProjectMembersPayload(ctx context.Context, sel ast.SelectionSet, v InviteProjectMembersPayload) graphql.Marshaler {
@@ -22941,21 +26952,8 @@ func (ec *executionContext) marshalNLabelColor2ᚖgithubᚗcomᚋjordanknottᚋt
 }
 
 func (ec *executionContext) unmarshalNLogoutUser2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐLogoutUser(ctx context.Context, v interface{}) (LogoutUser, error) {
-	return ec.unmarshalInputLogoutUser(ctx, v)
-}
-
-func (ec *executionContext) marshalNMePayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMePayload(ctx context.Context, sel ast.SelectionSet, v MePayload) graphql.Marshaler {
-	return ec._MePayload(ctx, sel, &v)
-}
-
-func (ec *executionContext) marshalNMePayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMePayload(ctx context.Context, sel ast.SelectionSet, v *MePayload) graphql.Marshaler {
-	if v == nil {
-		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
-	}
-	return ec._MePayload(ctx, sel, v)
+	res, err := ec.unmarshalInputLogoutUser(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNMember2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMember(ctx context.Context, sel ast.SelectionSet, v Member) graphql.Marshaler {
@@ -23010,7 +27008,8 @@ func (ec *executionContext) marshalNMember2ᚖgithubᚗcomᚋjordanknottᚋtaskc
 }
 
 func (ec *executionContext) unmarshalNMemberInvite2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberInvite(ctx context.Context, v interface{}) (MemberInvite, error) {
-	return ec.unmarshalInputMemberInvite(ctx, v)
+	res, err := ec.unmarshalInputMemberInvite(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNMemberInvite2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberInviteᚄ(ctx context.Context, v interface{}) ([]MemberInvite, error) {
@@ -23025,6 +27024,7 @@ func (ec *executionContext) unmarshalNMemberInvite2ᚕgithubᚗcomᚋjordanknott
 	var err error
 	res := make([]MemberInvite, len(vSlice))
 	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
 		res[i], err = ec.unmarshalNMemberInvite2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberInvite(ctx, vSlice[i])
 		if err != nil {
 			return nil, err
@@ -23048,7 +27048,8 @@ func (ec *executionContext) marshalNMemberList2ᚖgithubᚗcomᚋjordanknottᚋt
 }
 
 func (ec *executionContext) unmarshalNMemberSearchFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberSearchFilter(ctx context.Context, v interface{}) (MemberSearchFilter, error) {
-	return ec.unmarshalInputMemberSearchFilter(ctx, v)
+	res, err := ec.unmarshalInputMemberSearchFilter(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNMemberSearchResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMemberSearchResult(ctx context.Context, sel ast.SelectionSet, v MemberSearchResult) graphql.Marshaler {
@@ -23092,47 +27093,100 @@ func (ec *executionContext) marshalNMemberSearchResult2ᚕgithubᚗcomᚋjordank
 	return ret
 }
 
+func (ec *executionContext) unmarshalNMyTasks2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasks(ctx context.Context, v interface{}) (MyTasks, error) {
+	res, err := ec.unmarshalInputMyTasks(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNMyTasksPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksPayload(ctx context.Context, sel ast.SelectionSet, v MyTasksPayload) graphql.Marshaler {
+	return ec._MyTasksPayload(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNMyTasksPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksPayload(ctx context.Context, sel ast.SelectionSet, v *MyTasksPayload) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._MyTasksPayload(ctx, sel, v)
+}
+
+func (ec *executionContext) unmarshalNMyTasksSort2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksSort(ctx context.Context, v interface{}) (MyTasksSort, error) {
+	var res MyTasksSort
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNMyTasksSort2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksSort(ctx context.Context, sel ast.SelectionSet, v MyTasksSort) graphql.Marshaler {
+	return v
+}
+
+func (ec *executionContext) unmarshalNMyTasksStatus2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksStatus(ctx context.Context, v interface{}) (MyTasksStatus, error) {
+	var res MyTasksStatus
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNMyTasksStatus2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMyTasksStatus(ctx context.Context, sel ast.SelectionSet, v MyTasksStatus) graphql.Marshaler {
+	return v
+}
+
 func (ec *executionContext) unmarshalNNewProject2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewProject(ctx context.Context, v interface{}) (NewProject, error) {
-	return ec.unmarshalInputNewProject(ctx, v)
+	res, err := ec.unmarshalInputNewProject(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewProjectLabel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewProjectLabel(ctx context.Context, v interface{}) (NewProjectLabel, error) {
-	return ec.unmarshalInputNewProjectLabel(ctx, v)
-}
-
-func (ec *executionContext) unmarshalNNewRefreshToken2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewRefreshToken(ctx context.Context, v interface{}) (NewRefreshToken, error) {
-	return ec.unmarshalInputNewRefreshToken(ctx, v)
+	res, err := ec.unmarshalInputNewProjectLabel(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewTask2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTask(ctx context.Context, v interface{}) (NewTask, error) {
-	return ec.unmarshalInputNewTask(ctx, v)
+	res, err := ec.unmarshalInputNewTask(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewTaskGroup2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTaskGroup(ctx context.Context, v interface{}) (NewTaskGroup, error) {
-	return ec.unmarshalInputNewTaskGroup(ctx, v)
+	res, err := ec.unmarshalInputNewTaskGroup(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewTaskGroupLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTaskGroupLocation(ctx context.Context, v interface{}) (NewTaskGroupLocation, error) {
-	return ec.unmarshalInputNewTaskGroupLocation(ctx, v)
+	res, err := ec.unmarshalInputNewTaskGroupLocation(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewTaskLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTaskLocation(ctx context.Context, v interface{}) (NewTaskLocation, error) {
-	return ec.unmarshalInputNewTaskLocation(ctx, v)
+	res, err := ec.unmarshalInputNewTaskLocation(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewTeam(ctx context.Context, v interface{}) (NewTeam, error) {
-	return ec.unmarshalInputNewTeam(ctx, v)
+	res, err := ec.unmarshalInputNewTeam(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNNewUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNewUserAccount(ctx context.Context, v interface{}) (NewUserAccount, error) {
-	return ec.unmarshalInputNewUserAccount(ctx, v)
+	res, err := ec.unmarshalInputNewUserAccount(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
-func (ec *executionContext) marshalNNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐNotification(ctx context.Context, sel ast.SelectionSet, v db.Notification) graphql.Marshaler {
-	return ec._Notification(ctx, sel, &v)
+func (ec *executionContext) marshalNNotification2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐNotification(ctx context.Context, sel ast.SelectionSet, v *db.Notification) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._Notification(ctx, sel, v)
 }
 
-func (ec *executionContext) marshalNNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐNotificationᚄ(ctx context.Context, sel ast.SelectionSet, v []db.Notification) graphql.Marshaler {
+func (ec *executionContext) marshalNNotificationData2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationData(ctx context.Context, sel ast.SelectionSet, v NotificationData) graphql.Marshaler {
+	return ec._NotificationData(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNNotificationData2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationDataᚄ(ctx context.Context, sel ast.SelectionSet, v []NotificationData) graphql.Marshaler {
 	ret := make(graphql.Array, len(v))
 	var wg sync.WaitGroup
 	isLen1 := len(v) == 1
@@ -23156,7 +27210,7 @@ func (ec *executionContext) marshalNNotification2ᚕgithubᚗcomᚋjordanknott�
 			if !isLen1 {
 				defer wg.Done()
 			}
-			ret[i] = ec.marshalNNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐNotification(ctx, sel, v[i])
+			ret[i] = ec.marshalNNotificationData2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationData(ctx, sel, v[i])
 		}
 		if isLen1 {
 			f(i)
@@ -23169,37 +27223,109 @@ func (ec *executionContext) marshalNNotification2ᚕgithubᚗcomᚋjordanknott�
 	return ret
 }
 
-func (ec *executionContext) marshalNNotificationActor2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationActor(ctx context.Context, sel ast.SelectionSet, v NotificationActor) graphql.Marshaler {
-	return ec._NotificationActor(ctx, sel, &v)
+func (ec *executionContext) unmarshalNNotificationFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationFilter(ctx context.Context, v interface{}) (NotificationFilter, error) {
+	var res NotificationFilter
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
-func (ec *executionContext) marshalNNotificationActor2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationActor(ctx context.Context, sel ast.SelectionSet, v *NotificationActor) graphql.Marshaler {
+func (ec *executionContext) marshalNNotificationFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationFilter(ctx context.Context, sel ast.SelectionSet, v NotificationFilter) graphql.Marshaler {
+	return v
+}
+
+func (ec *executionContext) marshalNNotificationMarkAllAsReadResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationMarkAllAsReadResult(ctx context.Context, sel ast.SelectionSet, v NotificationMarkAllAsReadResult) graphql.Marshaler {
+	return ec._NotificationMarkAllAsReadResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNNotificationMarkAllAsReadResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationMarkAllAsReadResult(ctx context.Context, sel ast.SelectionSet, v *NotificationMarkAllAsReadResult) graphql.Marshaler {
 	if v == nil {
 		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
 			ec.Errorf(ctx, "must not be null")
 		}
 		return graphql.Null
 	}
-	return ec._NotificationActor(ctx, sel, v)
+	return ec._NotificationMarkAllAsReadResult(ctx, sel, v)
 }
 
-func (ec *executionContext) marshalNNotificationEntity2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationEntity(ctx context.Context, sel ast.SelectionSet, v NotificationEntity) graphql.Marshaler {
-	return ec._NotificationEntity(ctx, sel, &v)
+func (ec *executionContext) unmarshalNNotificationToggleReadInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationToggleReadInput(ctx context.Context, v interface{}) (NotificationToggleReadInput, error) {
+	res, err := ec.unmarshalInputNotificationToggleReadInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
-func (ec *executionContext) marshalNNotificationEntity2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationEntity(ctx context.Context, sel ast.SelectionSet, v *NotificationEntity) graphql.Marshaler {
+func (ec *executionContext) marshalNNotified2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotified(ctx context.Context, sel ast.SelectionSet, v Notified) graphql.Marshaler {
+	return ec._Notified(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNNotified2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedᚄ(ctx context.Context, sel ast.SelectionSet, v []Notified) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNNotified2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotified(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+	return ret
+}
+
+func (ec *executionContext) marshalNNotified2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotified(ctx context.Context, sel ast.SelectionSet, v *Notified) graphql.Marshaler {
 	if v == nil {
 		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
 			ec.Errorf(ctx, "must not be null")
 		}
 		return graphql.Null
 	}
-	return ec._NotificationEntity(ctx, sel, v)
+	return ec._Notified(ctx, sel, v)
+}
+
+func (ec *executionContext) unmarshalNNotifiedInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedInput(ctx context.Context, v interface{}) (NotifiedInput, error) {
+	res, err := ec.unmarshalInputNotifiedInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNNotifiedResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedResult(ctx context.Context, sel ast.SelectionSet, v NotifiedResult) graphql.Marshaler {
+	return ec._NotifiedResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNNotifiedResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotifiedResult(ctx context.Context, sel ast.SelectionSet, v *NotifiedResult) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._NotifiedResult(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx context.Context, v interface{}) (ObjectType, error) {
 	var res ObjectType
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNObjectType2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐObjectType(ctx context.Context, sel ast.SelectionSet, v ObjectType) graphql.Marshaler {
@@ -23259,6 +27385,16 @@ func (ec *executionContext) marshalNOwnedList2ᚖgithubᚗcomᚋjordanknottᚋta
 		return graphql.Null
 	}
 	return ec._OwnedList(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNPageInfo2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐPageInfo(ctx context.Context, sel ast.SelectionSet, v *PageInfo) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._PageInfo(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalNProfileIcon2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProfileIcon(ctx context.Context, sel ast.SelectionSet, v ProfileIcon) graphql.Marshaler {
@@ -23377,6 +27513,20 @@ func (ec *executionContext) marshalNProjectLabel2ᚖgithubᚗcomᚋjordanknott�
 	return ec._ProjectLabel(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNProjectPermission2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectPermission(ctx context.Context, sel ast.SelectionSet, v ProjectPermission) graphql.Marshaler {
+	return ec._ProjectPermission(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNProjectPermission2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectPermission(ctx context.Context, sel ast.SelectionSet, v *ProjectPermission) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._ProjectPermission(ctx, sel, v)
+}
+
 func (ec *executionContext) marshalNProjectRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectRole(ctx context.Context, sel ast.SelectionSet, v ProjectRole) graphql.Marshaler {
 	return ec._ProjectRole(ctx, sel, &v)
 }
@@ -23418,18 +27568,45 @@ func (ec *executionContext) marshalNProjectRole2ᚕgithubᚗcomᚋjordanknottᚋ
 	return ret
 }
 
-func (ec *executionContext) marshalNRefreshToken2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐRefreshToken(ctx context.Context, sel ast.SelectionSet, v db.RefreshToken) graphql.Marshaler {
-	return ec._RefreshToken(ctx, sel, &v)
+func (ec *executionContext) marshalNProjectTaskMapping2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectTaskMapping(ctx context.Context, sel ast.SelectionSet, v ProjectTaskMapping) graphql.Marshaler {
+	return ec._ProjectTaskMapping(ctx, sel, &v)
 }
 
-func (ec *executionContext) marshalNRefreshToken2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐRefreshToken(ctx context.Context, sel ast.SelectionSet, v *db.RefreshToken) graphql.Marshaler {
-	if v == nil {
-		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
-			ec.Errorf(ctx, "must not be null")
-		}
-		return graphql.Null
+func (ec *executionContext) marshalNProjectTaskMapping2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectTaskMappingᚄ(ctx context.Context, sel ast.SelectionSet, v []ProjectTaskMapping) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
 	}
-	return ec._RefreshToken(ctx, sel, v)
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNProjectTaskMapping2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectTaskMapping(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+	return ret
 }
 
 func (ec *executionContext) marshalNRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐRole(ctx context.Context, sel ast.SelectionSet, v db.Role) graphql.Marshaler {
@@ -23448,7 +27625,8 @@ func (ec *executionContext) marshalNRole2ᚖgithubᚗcomᚋjordanknottᚋtaskcaf
 
 func (ec *executionContext) unmarshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx context.Context, v interface{}) (RoleCode, error) {
 	var res RoleCode
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx context.Context, sel ast.SelectionSet, v RoleCode) graphql.Marshaler {
@@ -23457,7 +27635,8 @@ func (ec *executionContext) marshalNRoleCode2githubᚗcomᚋjordanknottᚋtaskca
 
 func (ec *executionContext) unmarshalNRoleLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevel(ctx context.Context, v interface{}) (RoleLevel, error) {
 	var res RoleLevel
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNRoleLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevel(ctx context.Context, sel ast.SelectionSet, v RoleLevel) graphql.Marshaler {
@@ -23476,6 +27655,7 @@ func (ec *executionContext) unmarshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋ
 	var err error
 	res := make([]RoleLevel, len(vSlice))
 	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
 		res[i], err = ec.unmarshalNRoleLevel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleLevel(ctx, vSlice[i])
 		if err != nil {
 			return nil, err
@@ -23522,16 +27702,19 @@ func (ec *executionContext) marshalNRoleLevel2ᚕgithubᚗcomᚋjordanknottᚋta
 }
 
 func (ec *executionContext) unmarshalNSetTaskChecklistItemComplete2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSetTaskChecklistItemComplete(ctx context.Context, v interface{}) (SetTaskChecklistItemComplete, error) {
-	return ec.unmarshalInputSetTaskChecklistItemComplete(ctx, v)
+	res, err := ec.unmarshalInputSetTaskChecklistItemComplete(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNSetTaskComplete2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSetTaskComplete(ctx context.Context, v interface{}) (SetTaskComplete, error) {
-	return ec.unmarshalInputSetTaskComplete(ctx, v)
+	res, err := ec.unmarshalInputSetTaskComplete(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNShareStatus2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐShareStatus(ctx context.Context, v interface{}) (ShareStatus, error) {
 	var res ShareStatus
-	return res, res.UnmarshalGQL(v)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNShareStatus2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐShareStatus(ctx context.Context, sel ast.SelectionSet, v ShareStatus) graphql.Marshaler {
@@ -23539,7 +27722,8 @@ func (ec *executionContext) marshalNShareStatus2githubᚗcomᚋjordanknottᚋtas
 }
 
 func (ec *executionContext) unmarshalNSortTaskGroup2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSortTaskGroup(ctx context.Context, v interface{}) (SortTaskGroup, error) {
-	return ec.unmarshalInputSortTaskGroup(ctx, v)
+	res, err := ec.unmarshalInputSortTaskGroup(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNSortTaskGroupPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐSortTaskGroupPayload(ctx context.Context, sel ast.SelectionSet, v SortTaskGroupPayload) graphql.Marshaler {
@@ -23557,7 +27741,8 @@ func (ec *executionContext) marshalNSortTaskGroupPayload2ᚖgithubᚗcomᚋjorda
 }
 
 func (ec *executionContext) unmarshalNString2string(ctx context.Context, v interface{}) (string, error) {
-	return graphql.UnmarshalString(v)
+	res, err := graphql.UnmarshalString(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNString2string(ctx context.Context, sel ast.SelectionSet, v string) graphql.Marshaler {
@@ -23963,7 +28148,8 @@ func (ec *executionContext) marshalNTaskLabel2ᚕgithubᚗcomᚋjordanknottᚋta
 }
 
 func (ec *executionContext) unmarshalNTaskPositionUpdate2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTaskPositionUpdate(ctx context.Context, v interface{}) (TaskPositionUpdate, error) {
-	return ec.unmarshalInputTaskPositionUpdate(ctx, v)
+	res, err := ec.unmarshalInputTaskPositionUpdate(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNTaskPositionUpdate2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTaskPositionUpdateᚄ(ctx context.Context, v interface{}) ([]TaskPositionUpdate, error) {
@@ -23978,6 +28164,7 @@ func (ec *executionContext) unmarshalNTaskPositionUpdate2ᚕgithubᚗcomᚋjorda
 	var err error
 	res := make([]TaskPositionUpdate, len(vSlice))
 	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
 		res[i], err = ec.unmarshalNTaskPositionUpdate2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTaskPositionUpdate(ctx, vSlice[i])
 		if err != nil {
 			return nil, err
@@ -24037,6 +28224,20 @@ func (ec *executionContext) marshalNTeam2ᚖgithubᚗcomᚋjordanknottᚋtaskcaf
 	return ec._Team(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNTeamPermission2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTeamPermission(ctx context.Context, sel ast.SelectionSet, v TeamPermission) graphql.Marshaler {
+	return ec._TeamPermission(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNTeamPermission2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTeamPermission(ctx context.Context, sel ast.SelectionSet, v *TeamPermission) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._TeamPermission(ctx, sel, v)
+}
+
 func (ec *executionContext) marshalNTeamRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐTeamRole(ctx context.Context, sel ast.SelectionSet, v TeamRole) graphql.Marshaler {
 	return ec._TeamRole(ctx, sel, &v)
 }
@@ -24079,7 +28280,8 @@ func (ec *executionContext) marshalNTeamRole2ᚕgithubᚗcomᚋjordanknottᚋtas
 }
 
 func (ec *executionContext) unmarshalNTime2timeᚐTime(ctx context.Context, v interface{}) (time.Time, error) {
-	return graphql.UnmarshalTime(v)
+	res, err := graphql.UnmarshalTime(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNTime2timeᚐTime(ctx context.Context, sel ast.SelectionSet, v time.Time) graphql.Marshaler {
@@ -24093,11 +28295,8 @@ func (ec *executionContext) marshalNTime2timeᚐTime(ctx context.Context, sel as
 }
 
 func (ec *executionContext) unmarshalNTime2ᚖtimeᚐTime(ctx context.Context, v interface{}) (*time.Time, error) {
-	if v == nil {
-		return nil, nil
-	}
-	res, err := ec.unmarshalNTime2timeᚐTime(ctx, v)
-	return &res, err
+	res, err := graphql.UnmarshalTime(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNTime2ᚖtimeᚐTime(ctx context.Context, sel ast.SelectionSet, v *time.Time) graphql.Marshaler {
@@ -24107,11 +28306,37 @@ func (ec *executionContext) marshalNTime2ᚖtimeᚐTime(ctx context.Context, sel
 		}
 		return graphql.Null
 	}
-	return ec.marshalNTime2timeᚐTime(ctx, sel, *v)
+	res := graphql.MarshalTime(*v)
+	if res == graphql.Null {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+	}
+	return res
+}
+
+func (ec *executionContext) unmarshalNToggleProjectVisibility2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleProjectVisibility(ctx context.Context, v interface{}) (ToggleProjectVisibility, error) {
+	res, err := ec.unmarshalInputToggleProjectVisibility(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalNToggleProjectVisibilityPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleProjectVisibilityPayload(ctx context.Context, sel ast.SelectionSet, v ToggleProjectVisibilityPayload) graphql.Marshaler {
+	return ec._ToggleProjectVisibilityPayload(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNToggleProjectVisibilityPayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleProjectVisibilityPayload(ctx context.Context, sel ast.SelectionSet, v *ToggleProjectVisibilityPayload) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._ToggleProjectVisibilityPayload(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalNToggleTaskLabelInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleTaskLabelInput(ctx context.Context, v interface{}) (ToggleTaskLabelInput, error) {
-	return ec.unmarshalInputToggleTaskLabelInput(ctx, v)
+	res, err := ec.unmarshalInputToggleTaskLabelInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNToggleTaskLabelPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleTaskLabelPayload(ctx context.Context, sel ast.SelectionSet, v ToggleTaskLabelPayload) graphql.Marshaler {
@@ -24128,8 +28353,14 @@ func (ec *executionContext) marshalNToggleTaskLabelPayload2ᚖgithubᚗcomᚋjor
 	return ec._ToggleTaskLabelPayload(ctx, sel, v)
 }
 
+func (ec *executionContext) unmarshalNToggleTaskWatch2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐToggleTaskWatch(ctx context.Context, v interface{}) (ToggleTaskWatch, error) {
+	res, err := ec.unmarshalInputToggleTaskWatch(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
 func (ec *executionContext) unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, v interface{}) (uuid.UUID, error) {
-	return UnmarshalUUID(v)
+	res, err := UnmarshalUUID(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, sel ast.SelectionSet, v uuid.UUID) graphql.Marshaler {
@@ -24154,6 +28385,7 @@ func (ec *executionContext) unmarshalNUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUI
 	var err error
 	res := make([]uuid.UUID, len(vSlice))
 	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
 		res[i], err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, vSlice[i])
 		if err != nil {
 			return nil, err
@@ -24172,19 +28404,23 @@ func (ec *executionContext) marshalNUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUID�
 }
 
 func (ec *executionContext) unmarshalNUpdateProjectLabel2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectLabel(ctx context.Context, v interface{}) (UpdateProjectLabel, error) {
-	return ec.unmarshalInputUpdateProjectLabel(ctx, v)
+	res, err := ec.unmarshalInputUpdateProjectLabel(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNUpdateProjectLabelColor2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectLabelColor(ctx context.Context, v interface{}) (UpdateProjectLabelColor, error) {
-	return ec.unmarshalInputUpdateProjectLabelColor(ctx, v)
+	res, err := ec.unmarshalInputUpdateProjectLabelColor(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNUpdateProjectLabelName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectLabelName(ctx context.Context, v interface{}) (UpdateProjectLabelName, error) {
-	return ec.unmarshalInputUpdateProjectLabelName(ctx, v)
+	res, err := ec.unmarshalInputUpdateProjectLabelName(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNUpdateProjectMemberRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectMemberRole(ctx context.Context, v interface{}) (UpdateProjectMemberRole, error) {
-	return ec.unmarshalInputUpdateProjectMemberRole(ctx, v)
+	res, err := ec.unmarshalInputUpdateProjectMemberRole(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateProjectMemberRolePayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectMemberRolePayload(ctx context.Context, sel ast.SelectionSet, v UpdateProjectMemberRolePayload) graphql.Marshaler {
@@ -24202,7 +28438,8 @@ func (ec *executionContext) marshalNUpdateProjectMemberRolePayload2ᚖgithubᚗc
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskChecklistItemLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistItemLocation(ctx context.Context, v interface{}) (UpdateTaskChecklistItemLocation, error) {
-	return ec.unmarshalInputUpdateTaskChecklistItemLocation(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskChecklistItemLocation(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateTaskChecklistItemLocationPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistItemLocationPayload(ctx context.Context, sel ast.SelectionSet, v UpdateTaskChecklistItemLocationPayload) graphql.Marshaler {
@@ -24220,11 +28457,13 @@ func (ec *executionContext) marshalNUpdateTaskChecklistItemLocationPayload2ᚖgi
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskChecklistItemName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistItemName(ctx context.Context, v interface{}) (UpdateTaskChecklistItemName, error) {
-	return ec.unmarshalInputUpdateTaskChecklistItemName(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskChecklistItemName(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskChecklistLocation2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistLocation(ctx context.Context, v interface{}) (UpdateTaskChecklistLocation, error) {
-	return ec.unmarshalInputUpdateTaskChecklistLocation(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskChecklistLocation(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateTaskChecklistLocationPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistLocationPayload(ctx context.Context, sel ast.SelectionSet, v UpdateTaskChecklistLocationPayload) graphql.Marshaler {
@@ -24242,7 +28481,8 @@ func (ec *executionContext) marshalNUpdateTaskChecklistLocationPayload2ᚖgithub
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskChecklistName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskChecklistName(ctx context.Context, v interface{}) (UpdateTaskChecklistName, error) {
-	return ec.unmarshalInputUpdateTaskChecklistName(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskChecklistName(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateTaskCommentPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskCommentPayload(ctx context.Context, sel ast.SelectionSet, v UpdateTaskCommentPayload) graphql.Marshaler {
@@ -24260,15 +28500,58 @@ func (ec *executionContext) marshalNUpdateTaskCommentPayload2ᚖgithubᚗcomᚋj
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskDescriptionInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDescriptionInput(ctx context.Context, v interface{}) (UpdateTaskDescriptionInput, error) {
-	return ec.unmarshalInputUpdateTaskDescriptionInput(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskDescriptionInput(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskDueDate2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDate(ctx context.Context, v interface{}) (UpdateTaskDueDate, error) {
-	return ec.unmarshalInputUpdateTaskDueDate(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskDueDate(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalNUpdateTaskDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotification(ctx context.Context, v interface{}) (UpdateTaskDueDateNotification, error) {
+	res, err := ec.unmarshalInputUpdateTaskDueDateNotification(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalNUpdateTaskDueDateNotification2ᚕgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotificationᚄ(ctx context.Context, v interface{}) ([]UpdateTaskDueDateNotification, error) {
+	var vSlice []interface{}
+	if v != nil {
+		if tmp1, ok := v.([]interface{}); ok {
+			vSlice = tmp1
+		} else {
+			vSlice = []interface{}{v}
+		}
+	}
+	var err error
+	res := make([]UpdateTaskDueDateNotification, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNUpdateTaskDueDateNotification2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotification(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNUpdateTaskDueDateNotificationsResult2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, v UpdateTaskDueDateNotificationsResult) graphql.Marshaler {
+	return ec._UpdateTaskDueDateNotificationsResult(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNUpdateTaskDueDateNotificationsResult2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskDueDateNotificationsResult(ctx context.Context, sel ast.SelectionSet, v *UpdateTaskDueDateNotificationsResult) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	return ec._UpdateTaskDueDateNotificationsResult(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskGroupName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskGroupName(ctx context.Context, v interface{}) (UpdateTaskGroupName, error) {
-	return ec.unmarshalInputUpdateTaskGroupName(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskGroupName(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateTaskLocationPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskLocationPayload(ctx context.Context, sel ast.SelectionSet, v UpdateTaskLocationPayload) graphql.Marshaler {
@@ -24286,11 +28569,13 @@ func (ec *executionContext) marshalNUpdateTaskLocationPayload2ᚖgithubᚗcomᚋ
 }
 
 func (ec *executionContext) unmarshalNUpdateTaskName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskName(ctx context.Context, v interface{}) (UpdateTaskName, error) {
-	return ec.unmarshalInputUpdateTaskName(ctx, v)
+	res, err := ec.unmarshalInputUpdateTaskName(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNUpdateTeamMemberRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTeamMemberRole(ctx context.Context, v interface{}) (UpdateTeamMemberRole, error) {
-	return ec.unmarshalInputUpdateTeamMemberRole(ctx, v)
+	res, err := ec.unmarshalInputUpdateTeamMemberRole(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateTeamMemberRolePayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTeamMemberRolePayload(ctx context.Context, sel ast.SelectionSet, v UpdateTeamMemberRolePayload) graphql.Marshaler {
@@ -24308,7 +28593,8 @@ func (ec *executionContext) marshalNUpdateTeamMemberRolePayload2ᚖgithubᚗcom�
 }
 
 func (ec *executionContext) unmarshalNUpdateUserInfo2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserInfo(ctx context.Context, v interface{}) (UpdateUserInfo, error) {
-	return ec.unmarshalInputUpdateUserInfo(ctx, v)
+	res, err := ec.unmarshalInputUpdateUserInfo(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateUserInfoPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserInfoPayload(ctx context.Context, sel ast.SelectionSet, v UpdateUserInfoPayload) graphql.Marshaler {
@@ -24326,7 +28612,8 @@ func (ec *executionContext) marshalNUpdateUserInfoPayload2ᚖgithubᚗcomᚋjord
 }
 
 func (ec *executionContext) unmarshalNUpdateUserPassword2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserPassword(ctx context.Context, v interface{}) (UpdateUserPassword, error) {
-	return ec.unmarshalInputUpdateUserPassword(ctx, v)
+	res, err := ec.unmarshalInputUpdateUserPassword(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateUserPasswordPayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserPasswordPayload(ctx context.Context, sel ast.SelectionSet, v UpdateUserPasswordPayload) graphql.Marshaler {
@@ -24344,7 +28631,8 @@ func (ec *executionContext) marshalNUpdateUserPasswordPayload2ᚖgithubᚗcomᚋ
 }
 
 func (ec *executionContext) unmarshalNUpdateUserRole2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserRole(ctx context.Context, v interface{}) (UpdateUserRole, error) {
-	return ec.unmarshalInputUpdateUserRole(ctx, v)
+	res, err := ec.unmarshalInputUpdateUserRole(ctx, v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalNUpdateUserRolePayload2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateUserRolePayload(ctx context.Context, sel ast.SelectionSet, v UpdateUserRolePayload) graphql.Marshaler {
@@ -24454,7 +28742,8 @@ func (ec *executionContext) marshalN__Directive2ᚕgithubᚗcomᚋ99designsᚋgq
 }
 
 func (ec *executionContext) unmarshalN__DirectiveLocation2string(ctx context.Context, v interface{}) (string, error) {
-	return graphql.UnmarshalString(v)
+	res, err := graphql.UnmarshalString(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalN__DirectiveLocation2string(ctx context.Context, sel ast.SelectionSet, v string) graphql.Marshaler {
@@ -24479,6 +28768,7 @@ func (ec *executionContext) unmarshalN__DirectiveLocation2ᚕstringᚄ(ctx conte
 	var err error
 	res := make([]string, len(vSlice))
 	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
 		res[i], err = ec.unmarshalN__DirectiveLocation2string(ctx, vSlice[i])
 		if err != nil {
 			return nil, err
@@ -24625,7 +28915,8 @@ func (ec *executionContext) marshalN__Type2ᚖgithubᚗcomᚋ99designsᚋgqlgen�
 }
 
 func (ec *executionContext) unmarshalN__TypeKind2string(ctx context.Context, v interface{}) (string, error) {
-	return graphql.UnmarshalString(v)
+	res, err := graphql.UnmarshalString(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalN__TypeKind2string(ctx context.Context, sel ast.SelectionSet, v string) graphql.Marshaler {
@@ -24638,32 +28929,25 @@ func (ec *executionContext) marshalN__TypeKind2string(ctx context.Context, sel a
 	return res
 }
 
-func (ec *executionContext) unmarshalOAddTaskLabelInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAddTaskLabelInput(ctx context.Context, v interface{}) (AddTaskLabelInput, error) {
-	return ec.unmarshalInputAddTaskLabelInput(ctx, v)
-}
-
 func (ec *executionContext) unmarshalOAddTaskLabelInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAddTaskLabelInput(ctx context.Context, v interface{}) (*AddTaskLabelInput, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOAddTaskLabelInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAddTaskLabelInput(ctx, v)
-	return &res, err
-}
-
-func (ec *executionContext) unmarshalOAssignTaskInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAssignTaskInput(ctx context.Context, v interface{}) (AssignTaskInput, error) {
-	return ec.unmarshalInputAssignTaskInput(ctx, v)
+	res, err := ec.unmarshalInputAddTaskLabelInput(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalOAssignTaskInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAssignTaskInput(ctx context.Context, v interface{}) (*AssignTaskInput, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOAssignTaskInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐAssignTaskInput(ctx, v)
-	return &res, err
+	res, err := ec.unmarshalInputAssignTaskInput(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalOBoolean2bool(ctx context.Context, v interface{}) (bool, error) {
-	return graphql.UnmarshalBoolean(v)
+	res, err := graphql.UnmarshalBoolean(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOBoolean2bool(ctx context.Context, sel ast.SelectionSet, v bool) graphql.Marshaler {
@@ -24674,19 +28958,15 @@ func (ec *executionContext) unmarshalOBoolean2ᚖbool(ctx context.Context, v int
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOBoolean2bool(ctx, v)
-	return &res, err
+	res, err := graphql.UnmarshalBoolean(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOBoolean2ᚖbool(ctx context.Context, sel ast.SelectionSet, v *bool) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec.marshalOBoolean2bool(ctx, sel, *v)
-}
-
-func (ec *executionContext) marshalOChecklistBadge2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐChecklistBadge(ctx context.Context, sel ast.SelectionSet, v ChecklistBadge) graphql.Marshaler {
-	return ec._ChecklistBadge(ctx, sel, &v)
+	return graphql.MarshalBoolean(*v)
 }
 
 func (ec *executionContext) marshalOChecklistBadge2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐChecklistBadge(ctx context.Context, sel ast.SelectionSet, v *ChecklistBadge) graphql.Marshaler {
@@ -24696,32 +28976,41 @@ func (ec *executionContext) marshalOChecklistBadge2ᚖgithubᚗcomᚋjordanknott
 	return ec._ChecklistBadge(ctx, sel, v)
 }
 
-func (ec *executionContext) unmarshalOCreateTaskComment2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskComment(ctx context.Context, v interface{}) (CreateTaskComment, error) {
-	return ec.unmarshalInputCreateTaskComment(ctx, v)
+func (ec *executionContext) marshalOCommentsBadge2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCommentsBadge(ctx context.Context, sel ast.SelectionSet, v *CommentsBadge) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._CommentsBadge(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOCreateTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskComment(ctx context.Context, v interface{}) (*CreateTaskComment, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOCreateTaskComment2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐCreateTaskComment(ctx, v)
-	return &res, err
-}
-
-func (ec *executionContext) unmarshalODeleteTaskComment2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskComment(ctx context.Context, v interface{}) (DeleteTaskComment, error) {
-	return ec.unmarshalInputDeleteTaskComment(ctx, v)
+	res, err := ec.unmarshalInputCreateTaskComment(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalODeleteTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskComment(ctx context.Context, v interface{}) (*DeleteTaskComment, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalODeleteTaskComment2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐDeleteTaskComment(ctx, v)
-	return &res, err
+	res, err := ec.unmarshalInputDeleteTaskComment(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
-func (ec *executionContext) marshalOProfileIcon2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProfileIcon(ctx context.Context, sel ast.SelectionSet, v ProfileIcon) graphql.Marshaler {
-	return ec._ProfileIcon(ctx, sel, &v)
+func (ec *executionContext) marshalOMePayload2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐMePayload(ctx context.Context, sel ast.SelectionSet, v *MePayload) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._MePayload(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalONotificationCausedBy2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐNotificationCausedBy(ctx context.Context, sel ast.SelectionSet, v *NotificationCausedBy) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._NotificationCausedBy(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalOProfileIcon2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProfileIcon(ctx context.Context, sel ast.SelectionSet, v *ProfileIcon) graphql.Marshaler {
@@ -24731,32 +29020,41 @@ func (ec *executionContext) marshalOProfileIcon2ᚖgithubᚗcomᚋjordanknottᚋ
 	return ec._ProfileIcon(ctx, sel, v)
 }
 
-func (ec *executionContext) unmarshalOProjectsFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectsFilter(ctx context.Context, v interface{}) (ProjectsFilter, error) {
-	return ec.unmarshalInputProjectsFilter(ctx, v)
-}
-
 func (ec *executionContext) unmarshalOProjectsFilter2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectsFilter(ctx context.Context, v interface{}) (*ProjectsFilter, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOProjectsFilter2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐProjectsFilter(ctx, v)
-	return &res, err
-}
-
-func (ec *executionContext) unmarshalORemoveTaskLabelInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRemoveTaskLabelInput(ctx context.Context, v interface{}) (RemoveTaskLabelInput, error) {
-	return ec.unmarshalInputRemoveTaskLabelInput(ctx, v)
+	res, err := ec.unmarshalInputProjectsFilter(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalORemoveTaskLabelInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRemoveTaskLabelInput(ctx context.Context, v interface{}) (*RemoveTaskLabelInput, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalORemoveTaskLabelInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRemoveTaskLabelInput(ctx, v)
-	return &res, err
+	res, err := ec.unmarshalInputRemoveTaskLabelInput(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalORoleCode2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx context.Context, v interface{}) (*RoleCode, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var res = new(RoleCode)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalORoleCode2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐRoleCode(ctx context.Context, sel ast.SelectionSet, v *RoleCode) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return v
 }
 
 func (ec *executionContext) unmarshalOString2string(ctx context.Context, v interface{}) (string, error) {
-	return graphql.UnmarshalString(v)
+	res, err := graphql.UnmarshalString(v)
+	return res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOString2string(ctx context.Context, sel ast.SelectionSet, v string) graphql.Marshaler {
@@ -24767,19 +29065,15 @@ func (ec *executionContext) unmarshalOString2ᚖstring(ctx context.Context, v in
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOString2string(ctx, v)
-	return &res, err
+	res, err := graphql.UnmarshalString(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOString2ᚖstring(ctx context.Context, sel ast.SelectionSet, v *string) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec.marshalOString2string(ctx, sel, *v)
-}
-
-func (ec *executionContext) marshalOTeam2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeam(ctx context.Context, sel ast.SelectionSet, v db.Team) graphql.Marshaler {
-	return ec._Team(ctx, sel, &v)
+	return graphql.MarshalString(*v)
 }
 
 func (ec *executionContext) marshalOTeam2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐTeam(ctx context.Context, sel ast.SelectionSet, v *db.Team) graphql.Marshaler {
@@ -24789,90 +29083,94 @@ func (ec *executionContext) marshalOTeam2ᚖgithubᚗcomᚋjordanknottᚋtaskcaf
 	return ec._Team(ctx, sel, v)
 }
 
-func (ec *executionContext) unmarshalOTime2timeᚐTime(ctx context.Context, v interface{}) (time.Time, error) {
-	return graphql.UnmarshalTime(v)
-}
-
-func (ec *executionContext) marshalOTime2timeᚐTime(ctx context.Context, sel ast.SelectionSet, v time.Time) graphql.Marshaler {
-	return graphql.MarshalTime(v)
-}
-
 func (ec *executionContext) unmarshalOTime2ᚖtimeᚐTime(ctx context.Context, v interface{}) (*time.Time, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOTime2timeᚐTime(ctx, v)
-	return &res, err
+	res, err := graphql.UnmarshalTime(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOTime2ᚖtimeᚐTime(ctx context.Context, sel ast.SelectionSet, v *time.Time) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec.marshalOTime2timeᚐTime(ctx, sel, *v)
+	return graphql.MarshalTime(*v)
 }
 
-func (ec *executionContext) unmarshalOUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, v interface{}) (uuid.UUID, error) {
-	return UnmarshalUUID(v)
+func (ec *executionContext) unmarshalOUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUIDᚄ(ctx context.Context, v interface{}) ([]uuid.UUID, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var vSlice []interface{}
+	if v != nil {
+		if tmp1, ok := v.([]interface{}); ok {
+			vSlice = tmp1
+		} else {
+			vSlice = []interface{}{v}
+		}
+	}
+	var err error
+	res := make([]uuid.UUID, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
 }
 
-func (ec *executionContext) marshalOUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, sel ast.SelectionSet, v uuid.UUID) graphql.Marshaler {
-	return MarshalUUID(v)
+func (ec *executionContext) marshalOUUID2ᚕgithubᚗcomᚋgoogleᚋuuidᚐUUIDᚄ(ctx context.Context, sel ast.SelectionSet, v []uuid.UUID) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, sel, v[i])
+	}
+
+	return ret
 }
 
 func (ec *executionContext) unmarshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, v interface{}) (*uuid.UUID, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, v)
-	return &res, err
+	res, err := UnmarshalUUID(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOUUID2ᚖgithubᚗcomᚋgoogleᚋuuidᚐUUID(ctx context.Context, sel ast.SelectionSet, v *uuid.UUID) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
-	return ec.marshalOUUID2githubᚗcomᚋgoogleᚋuuidᚐUUID(ctx, sel, *v)
-}
-
-func (ec *executionContext) unmarshalOUnassignTaskInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUnassignTaskInput(ctx context.Context, v interface{}) (UnassignTaskInput, error) {
-	return ec.unmarshalInputUnassignTaskInput(ctx, v)
+	return MarshalUUID(*v)
 }
 
 func (ec *executionContext) unmarshalOUnassignTaskInput2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUnassignTaskInput(ctx context.Context, v interface{}) (*UnassignTaskInput, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOUnassignTaskInput2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUnassignTaskInput(ctx, v)
-	return &res, err
-}
-
-func (ec *executionContext) unmarshalOUpdateProjectName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectName(ctx context.Context, v interface{}) (UpdateProjectName, error) {
-	return ec.unmarshalInputUpdateProjectName(ctx, v)
+	res, err := ec.unmarshalInputUnassignTaskInput(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalOUpdateProjectName2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectName(ctx context.Context, v interface{}) (*UpdateProjectName, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOUpdateProjectName2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateProjectName(ctx, v)
-	return &res, err
-}
-
-func (ec *executionContext) unmarshalOUpdateTaskComment2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskComment(ctx context.Context, v interface{}) (UpdateTaskComment, error) {
-	return ec.unmarshalInputUpdateTaskComment(ctx, v)
+	res, err := ec.unmarshalInputUpdateProjectName(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalOUpdateTaskComment2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskComment(ctx context.Context, v interface{}) (*UpdateTaskComment, error) {
 	if v == nil {
 		return nil, nil
 	}
-	res, err := ec.unmarshalOUpdateTaskComment2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋgraphᚐUpdateTaskComment(ctx, v)
-	return &res, err
-}
-
-func (ec *executionContext) marshalOUserAccount2githubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐUserAccount(ctx context.Context, sel ast.SelectionSet, v db.UserAccount) graphql.Marshaler {
-	return ec._UserAccount(ctx, sel, &v)
+	res, err := ec.unmarshalInputUpdateTaskComment(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) marshalOUserAccount2ᚖgithubᚗcomᚋjordanknottᚋtaskcafeᚋinternalᚋdbᚐUserAccount(ctx context.Context, sel ast.SelectionSet, v *db.UserAccount) graphql.Marshaler {
@@ -25002,19 +29300,11 @@ func (ec *executionContext) marshalO__InputValue2ᚕgithubᚗcomᚋ99designsᚋg
 	return ret
 }
 
-func (ec *executionContext) marshalO__Schema2githubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐSchema(ctx context.Context, sel ast.SelectionSet, v introspection.Schema) graphql.Marshaler {
-	return ec.___Schema(ctx, sel, &v)
-}
-
 func (ec *executionContext) marshalO__Schema2ᚖgithubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐSchema(ctx context.Context, sel ast.SelectionSet, v *introspection.Schema) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}
 	return ec.___Schema(ctx, sel, v)
-}
-
-func (ec *executionContext) marshalO__Type2githubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐType(ctx context.Context, sel ast.SelectionSet, v introspection.Type) graphql.Marshaler {
-	return ec.___Type(ctx, sel, &v)
 }
 
 func (ec *executionContext) marshalO__Type2ᚕgithubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐTypeᚄ(ctx context.Context, sel ast.SelectionSet, v []introspection.Type) graphql.Marshaler {

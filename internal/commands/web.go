@@ -1,21 +1,20 @@
 package commands
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/RichardKnop/machinery/v1"
+	mTasks "github.com/RichardKnop/machinery/v1/tasks"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/httpfs"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/jordanknott/taskcafe/internal/config"
 	"github.com/jordanknott/taskcafe/internal/route"
-	"github.com/jordanknott/taskcafe/internal/utils"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -33,15 +32,19 @@ func newWebCmd() *cobra.Command {
 			log.SetFormatter(Formatter)
 			log.SetLevel(log.InfoLevel)
 
-			connection := fmt.Sprintf("user=%s password=%s host=%s dbname=%s port=%s sslmode=disable",
-				viper.GetString("database.user"),
-				viper.GetString("database.password"),
-				viper.GetString("database.host"),
-				viper.GetString("database.name"),
-				viper.GetString("database.port"),
-			)
+			appConfig, err := config.GetAppConfig()
+			if err != nil {
+				return err
+			}
+
+			redisClient, err := appConfig.MessageQueue.GetMessageQueueClient()
+			if err != nil {
+				return err
+			}
+			defer redisClient.Close()
+
+			connection := appConfig.Database.GetDatabaseConnectionUri()
 			var db *sqlx.DB
-			var err error
 			var retryDuration time.Duration
 			maxRetryNumber := 4
 			for i := 0; i < maxRetryNumber; i++ {
@@ -70,35 +73,26 @@ func newWebCmd() *cobra.Command {
 				}
 			}
 
-			log.WithFields(log.Fields{"url": viper.GetString("server.hostname")}).Info("starting server")
-			secret := viper.GetString("server.secret")
-			if strings.TrimSpace(secret) == "" {
-				log.Warn("server.secret is not set, generating a random secret")
-				secret = uuid.New().String()
+			var server *machinery.Server
+			jobConfig := appConfig.Job.GetJobConfig()
+			server, err = machinery.NewServer(&jobConfig)
+			if err != nil {
+				return err
 			}
-			r, _ := route.NewRouter(db, utils.EmailConfig{
-				From:               viper.GetString("smtp.from"),
-				Host:               viper.GetString("smtp.host"),
-				Port:               viper.GetInt("smtp.port"),
-				Username:           viper.GetString("smtp.username"),
-				Password:           viper.GetString("smtp.password"),
-				InsecureSkipVerify: viper.GetBool("smtp.skip_verify"),
-			}, []byte(secret))
+			signature := &mTasks.Signature{
+				Name: "scheduleDueDateNotifications",
+			}
+			server.SendTask(signature)
+
+			r, _ := route.NewRouter(db, redisClient, server, appConfig)
+			log.WithFields(log.Fields{"url": viper.GetString("server.hostname")}).Info("starting server")
 			return http.ListenAndServe(viper.GetString("server.hostname"), r)
 		},
 	}
 
-	viper.SetDefault("smtp.from", "no-reply@example.com")
-	viper.SetDefault("smtp.host", "localhost")
-	viper.SetDefault("smtp.port", 587)
-	viper.SetDefault("smtp.username", "")
-	viper.SetDefault("smtp.password", "")
-	viper.SetDefault("smtp.skip_verify", false)
-
 	cc.Flags().Bool("migrate", false, "if true, auto run's schema migrations before starting the web server")
 
 	viper.BindPFlag("migrate", cc.Flags().Lookup("migrate"))
-
 	viper.SetDefault("migrate", false)
 	return cc
 }

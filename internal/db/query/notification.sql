@@ -1,27 +1,50 @@
 -- name: GetAllNotificationsForUserID :many
-SELECT n.* FROM notification as n
-INNER JOIN notification_object as no ON no.notification_object_id = n.notification_object_id
-WHERE n.notifier_id = $1 ORDER BY no.created_on DESC;
+SELECT * FROM notification_notified AS nn
+  INNER JOIN notification AS n ON n.notification_id = nn.notification_id
+  WHERE nn.user_id = $1;
 
--- name: GetNotificationForNotificationID :one
-SELECT n.*, no.* FROM notification as n
-  INNER JOIN notification_object as no ON no.notification_object_id = n.notification_object_id
-WHERE n.notification_id = $1;
+-- name: GetNotifiedByID :one
+SELECT * FROM notification_notified as nn
+  INNER JOIN notification AS n ON n.notification_id = nn.notification_id
+  WHERE notified_id = $1;
 
--- name: CreateNotificationObject :one
-INSERT INTO notification_object(entity_type, action_type, entity_id, created_on, actor_id)
-  VALUES ($1, $2, $3, $4, $5) RETURNING *;
+-- name: GetNotifiedByIDNoExtra :one
+SELECT * FROM notification_notified as nn WHERE nn.notified_id = $1;
 
--- name: GetEntityIDForNotificationID :one
-SELECT no.entity_id FROM notification as n
-  INNER JOIN notification_object as no ON no.notification_object_id = n.notification_object_id
-WHERE n.notification_id = $1;
+-- name: HasUnreadNotification :one
+SELECT EXISTS (SELECT 1 FROM notification_notified WHERE read = false AND user_id = $1);
 
--- name: GetEntityForNotificationID :one
-SELECT no.created_on, no.entity_id, no.entity_type, no.action_type, no.actor_id FROM notification as n
-  INNER JOIN notification_object as no ON no.notification_object_id = n.notification_object_id
-WHERE n.notification_id = $1;
+-- name: MarkNotificationAsRead :exec
+UPDATE notification_notified SET read = $3, read_at = $2 WHERE user_id = $1 AND notified_id = $4;
+
+-- name: MarkAllNotificationsRead :exec
+UPDATE notification_notified SET read = true, read_at = $2 WHERE user_id = $1;
 
 -- name: CreateNotification :one
-INSERT INTO notification(notification_object_id, notifier_id)
-  VALUES ($1, $2) RETURNING *;
+INSERT INTO notification (caused_by, data, action_type, created_on)
+  VALUES ($1, $2, $3, $4) RETURNING *;
+
+-- name: CreateNotificationNotifed :one
+INSERT INTO notification_notified (notification_id, user_id) VALUES ($1, $2) RETURNING *;
+
+-- name: GetNotificationByID :one
+SELECT * FROM notification WHERE notification_id = $1;
+
+-- name: GetNotificationsForUserIDPaged :many
+SELECT n.*, nn.* FROM notification_notified AS nn
+  INNER JOIN notification AS n ON n.notification_id = nn.notification_id
+  WHERE nn.user_id = @user_id::uuid
+  AND (@enable_unread::boolean = false OR nn.read = false)
+  AND (@enable_action_type::boolean = false OR n.action_type = ANY(@action_type::text[]))
+  ORDER BY n.created_on DESC
+  LIMIT @limit_rows::int;
+
+-- name: GetNotificationsForUserIDCursor :many
+SELECT n.*, nn.* FROM notification_notified AS nn
+  INNER JOIN notification AS n ON n.notification_id = nn.notification_id
+  WHERE (n.created_on, n.notification_id) < (@created_on::timestamptz, @notification_id::uuid)
+  AND nn.user_id = @user_id::uuid
+  AND (@enable_unread::boolean = false OR nn.read = false)
+  AND (@enable_action_type::boolean = false OR n.action_type = ANY(@action_type::text[]))
+  ORDER BY n.created_on DESC
+  LIMIT @limit_rows::int;

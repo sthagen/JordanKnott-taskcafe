@@ -17,7 +17,7 @@ import {
 } from './Styles';
 
 function getPopupOptions(options?: PopupOptions) {
-  const popupOptions = {
+  const popupOptions: PopupOptionsInternal = {
     borders: true,
     diamondColor: theme.colors.bg.secondary,
     targetPadding: '10px',
@@ -39,6 +39,9 @@ function getPopupOptions(options?: PopupOptions) {
     }
     if (options.diamondColor) {
       popupOptions.diamondColor = options.diamondColor;
+    }
+    if (options.onClose) {
+      popupOptions.onClose = options.onClose;
     }
   }
   return popupOptions;
@@ -136,6 +139,7 @@ type PopupOptionsInternal = {
   targetPadding: string;
   diamondColor: string;
   showDiamond: boolean;
+  onClose?: () => void;
 };
 
 type PopupOptions = {
@@ -144,6 +148,7 @@ type PopupOptions = {
   width?: number | null;
   borders?: boolean | null;
   diamondColor?: string | null;
+  onClose?: () => void;
 };
 const defaultState = {
   isOpen: false,
@@ -213,7 +218,7 @@ export const PopupProvider: React.FC = ({ children }) => {
 
   const setTab = (newTab: number, options?: PopupOptions) => {
     setState((prevState: PopupState) =>
-      produce(prevState, draftState => {
+      produce(prevState, (draftState) => {
         draftState.previousTab = currentState.currentTab;
         draftState.currentTab = newTab;
         if (options) {
@@ -239,7 +244,12 @@ export const PopupProvider: React.FC = ({ children }) => {
             top={currentState.top}
             targetPadding={currentState.options.targetPadding}
             left={currentState.left}
-            onClose={() => setState(defaultState)}
+            onClose={() => {
+              if (currentState.options && currentState.options.onClose) {
+                currentState.options.onClose();
+              }
+              setState(defaultState);
+            }}
             width={currentState.options.width}
           >
             {currentState.content}
@@ -286,7 +296,7 @@ const PopupMenu: React.FC<Props> = ({ width, title, top, left, onClose, noHeader
       <Wrapper padding borders>
         {onPrevious && (
           <PreviousButton onClick={onPrevious}>
-            <AngleLeft color="#c2c6dc" />
+            <AngleLeft size={16} color="#c2c6dc" />
           </PreviousButton>
         )}
         {noHeader ? (
@@ -322,7 +332,7 @@ export const Popup: React.FC<PopupProps> = ({ borders = true, padding = true, ti
               setTab(0);
             }}
           >
-            <AngleLeft color="#c2c6dc" />
+            <AngleLeft size={16} color="#c2c6dc" />
           </PreviousButton>
         )}
         {title && (

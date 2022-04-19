@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jordanknott/taskcafe/internal/config"
+	"github.com/jordanknott/taskcafe/internal/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -12,22 +14,19 @@ import (
 const mainDescription = `Taskcafé is an open soure project management
 system written in Golang & React.`
 
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
-)
-
-var versionTemplate = fmt.Sprintf(`Version: %s
+func VersionTemplate() string {
+	info := utils.Version()
+	return fmt.Sprintf(`Version: %s
 Commit: %s
-Built: %s`, version, commit, date+"\n")
+Built: %s`, info.Version, info.CommitHash, info.BuildDate+"\n")
+}
 
 var cfgFile string
 
 var rootCmd = &cobra.Command{
 	Use:     "taskcafe",
 	Long:    mainDescription,
-	Version: version,
+	Version: VersionTemplate(),
 }
 
 var migration http.FileSystem
@@ -54,6 +53,7 @@ func initConfig() {
 	viper.SetEnvPrefix("TASKCAFE")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
+	config.InitDefaults()
 
 	err := viper.ReadInConfig()
 	if err == nil {
@@ -63,30 +63,11 @@ func initConfig() {
 		panic(err)
 	}
 
-	viper.SetDefault("server.hostname", "0.0.0.0:3333")
-	viper.SetDefault("database.host", "127.0.0.1")
-	viper.SetDefault("database.name", "taskcafe")
-	viper.SetDefault("database.user", "taskcafe")
-	viper.SetDefault("database.password", "taskcafe_test")
-
-	viper.SetDefault("queue.broker", "amqp://guest:guest@localhost:5672/")
-	viper.SetDefault("queue.store", "memcache://localhost:11211")
-
 }
 
 // Execute the root cobra command
 func Execute() {
-	viper.SetDefault("server.hostname", "0.0.0.0:3333")
-	viper.SetDefault("database.host", "127.0.0.1")
-	viper.SetDefault("database.name", "taskcafe")
-	viper.SetDefault("database.user", "taskcafe")
-	viper.SetDefault("database.password", "taskcafe_test")
-	viper.SetDefault("database.port", "5432")
-
-	viper.SetDefault("queue.broker", "amqp://guest:guest@localhost:5672/")
-	viper.SetDefault("queue.store", "memcache://localhost:11211")
-
-	rootCmd.SetVersionTemplate(versionTemplate)
-	rootCmd.AddCommand(newWebCmd(), newMigrateCmd(), newTokenCmd(), newWorkerCmd(), newResetPasswordCmd())
+	rootCmd.SetVersionTemplate(VersionTemplate())
+	rootCmd.AddCommand(newJobCmd(), newTokenCmd(), newWebCmd(), newMigrateCmd(), newWorkerCmd(), newResetPasswordCmd(), newSeedCmd())
 	rootCmd.Execute()
 }

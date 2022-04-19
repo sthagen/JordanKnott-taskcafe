@@ -1,3 +1,5 @@
+declare module 'loglevel-plugin-remote';
+
 interface JWTToken {
   userId: string;
   orgRole: string;
@@ -59,11 +61,6 @@ type User = TaskUser & {
   owned: RelatedList;
 };
 
-type RefreshTokenResponse = {
-  accessToken: string;
-  setup?: null | { confirmToken: string };
-};
-
 type LoginFormData = {
   username: string;
   password: string;
@@ -94,7 +91,7 @@ type ErrorOption =
 type SetFailedFn = () => void;
 type ConfirmProps = {
   hasConfirmToken: boolean;
-  onConfirmUser: (setFailed: SetFailedFn) => void;
+  hasFailed: boolean;
 };
 
 type RegisterProps = {

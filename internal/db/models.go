@@ -10,6 +10,41 @@ import (
 	"github.com/google/uuid"
 )
 
+type AccountSetting struct {
+	AccountSettingID          string         `json:"account_setting_id"`
+	Constrained               bool           `json:"constrained"`
+	DataType                  string         `json:"data_type"`
+	ConstrainedDefaultValue   sql.NullString `json:"constrained_default_value"`
+	UnconstrainedDefaultValue sql.NullString `json:"unconstrained_default_value"`
+}
+
+type AccountSettingAllowedValue struct {
+	AllowedValueID uuid.UUID `json:"allowed_value_id"`
+	SettingID      int32     `json:"setting_id"`
+	ItemValue      string    `json:"item_value"`
+}
+
+type AccountSettingDataType struct {
+	DataTypeID string `json:"data_type_id"`
+}
+
+type AccountSettingValue struct {
+	AccountSettingID   uuid.UUID      `json:"account_setting_id"`
+	UserID             uuid.UUID      `json:"user_id"`
+	SettingID          int32          `json:"setting_id"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	AllowedValueID     uuid.UUID      `json:"allowed_value_id"`
+	UnconstrainedValue sql.NullString `json:"unconstrained_value"`
+}
+
+type AuthToken struct {
+	TokenID   uuid.UUID `json:"token_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type LabelColor struct {
 	LabelColorID uuid.UUID `json:"label_color_id"`
 	ColorHex     string    `json:"color_hex"`
@@ -18,19 +53,19 @@ type LabelColor struct {
 }
 
 type Notification struct {
-	NotificationID       uuid.UUID `json:"notification_id"`
-	NotificationObjectID uuid.UUID `json:"notification_object_id"`
-	NotifierID           uuid.UUID `json:"notifier_id"`
-	Read                 bool      `json:"read"`
+	NotificationID uuid.UUID       `json:"notification_id"`
+	CausedBy       uuid.UUID       `json:"caused_by"`
+	ActionType     string          `json:"action_type"`
+	Data           json.RawMessage `json:"data"`
+	CreatedOn      time.Time       `json:"created_on"`
 }
 
-type NotificationObject struct {
-	NotificationObjectID uuid.UUID `json:"notification_object_id"`
-	EntityID             uuid.UUID `json:"entity_id"`
-	ActionType           int32     `json:"action_type"`
-	ActorID              uuid.UUID `json:"actor_id"`
-	EntityType           int32     `json:"entity_type"`
-	CreatedOn            time.Time `json:"created_on"`
+type NotificationNotified struct {
+	NotifiedID     uuid.UUID    `json:"notified_id"`
+	NotificationID uuid.UUID    `json:"notification_id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	Read           bool         `json:"read"`
+	ReadAt         sql.NullTime `json:"read_at"`
 }
 
 type Organization struct {
@@ -46,10 +81,12 @@ type PersonalProject struct {
 }
 
 type Project struct {
-	ProjectID uuid.UUID `json:"project_id"`
-	TeamID    uuid.UUID `json:"team_id"`
-	CreatedAt time.Time `json:"created_at"`
-	Name      string    `json:"name"`
+	ProjectID uuid.UUID    `json:"project_id"`
+	TeamID    uuid.UUID    `json:"team_id"`
+	CreatedAt time.Time    `json:"created_at"`
+	Name      string       `json:"name"`
+	PublicOn  sql.NullTime `json:"public_on"`
+	ShortID   string       `json:"short_id"`
 }
 
 type ProjectLabel struct {
@@ -74,13 +111,6 @@ type ProjectMemberInvited struct {
 	UserAccountInvitedID   uuid.UUID `json:"user_account_invited_id"`
 }
 
-type RefreshToken struct {
-	TokenID   uuid.UUID `json:"token_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
 type Role struct {
 	Code string `json:"code"`
 	Name string `json:"name"`
@@ -102,6 +132,8 @@ type Task struct {
 	DueDate     sql.NullTime   `json:"due_date"`
 	Complete    bool           `json:"complete"`
 	CompletedAt sql.NullTime   `json:"completed_at"`
+	HasTime     bool           `json:"has_time"`
+	ShortID     string         `json:"short_id"`
 }
 
 type TaskActivity struct {
@@ -155,6 +187,18 @@ type TaskComment struct {
 	Message       string       `json:"message"`
 }
 
+type TaskDueDateReminder struct {
+	DueDateReminderID uuid.UUID `json:"due_date_reminder_id"`
+	TaskID            uuid.UUID `json:"task_id"`
+	Period            int32     `json:"period"`
+	Duration          string    `json:"duration"`
+	RemindAt          time.Time `json:"remind_at"`
+}
+
+type TaskDueDateReminderDuration struct {
+	Code string `json:"code"`
+}
+
 type TaskGroup struct {
 	TaskGroupID uuid.UUID `json:"task_group_id"`
 	ProjectID   uuid.UUID `json:"project_id"`
@@ -168,6 +212,13 @@ type TaskLabel struct {
 	TaskID         uuid.UUID `json:"task_id"`
 	ProjectLabelID uuid.UUID `json:"project_label_id"`
 	AssignedDate   time.Time `json:"assigned_date"`
+}
+
+type TaskWatcher struct {
+	TaskWatcherID uuid.UUID `json:"task_watcher_id"`
+	TaskID        uuid.UUID `json:"task_id"`
+	UserID        uuid.UUID `json:"user_id"`
+	WatchedAt     time.Time `json:"watched_at"`
 }
 
 type Team struct {

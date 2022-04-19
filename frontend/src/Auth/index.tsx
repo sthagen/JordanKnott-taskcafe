@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { useHistory } from 'react-router';
-import JwtDecode from 'jwt-decode';
-import { setAccessToken } from 'shared/utils/accessToken';
+import { useHistory, useLocation } from 'react-router';
 import Login from 'shared/components/Login';
 import UserContext from 'App/context';
 import { Container, LoginWrapper } from './Styles';
@@ -9,6 +7,7 @@ import { Container, LoginWrapper } from './Styles';
 const Auth = () => {
   const [invalidLoginAttempt, setInvalidLoginAttempt] = useState(0);
   const history = useHistory();
+  const location = useLocation<{ redirect: string } | undefined>();
   const { setUser } = useContext(UserContext);
   const login = (
     data: LoginFormData,
@@ -22,7 +21,7 @@ const Auth = () => {
         username: data.username,
         password: data.password,
       }),
-    }).then(async x => {
+    }).then(async (x) => {
       if (x.status === 401) {
         setInvalidLoginAttempt(invalidLoginAttempt + 1);
         setError('username', { type: 'error', message: 'Invalid username' });
@@ -30,42 +29,27 @@ const Auth = () => {
         setComplete(true);
       } else {
         const response = await x.json();
-        const { accessToken } = response;
-        const claims: JWTToken = JwtDecode(accessToken);
-        const currentUser = {
-          id: claims.userId,
-          roles: { org: claims.orgRole, teams: new Map<string, string>(), projects: new Map<string, string>() },
-        };
-        setUser(currentUser);
-        setComplete(true);
-        setAccessToken(accessToken);
-
-        history.push('/');
+        const { userID } = response;
+        setUser(userID);
+        if (location.state && location.state.redirect) {
+          history.push(location.state.redirect);
+        } else {
+          history.push('/');
+        }
       }
     });
   };
 
   useEffect(() => {
-    fetch('/auth/refresh_token', {
+    fetch('/auth/validate', {
       method: 'POST',
       credentials: 'include',
-    }).then(async x => {
-      const { status } = x;
-      if (status === 200) {
-        const response: RefreshTokenResponse = await x.json();
-        const { accessToken, setup } = response;
-        if (setup) {
-          history.replace(`/register?confirmToken=${setup.confirmToken}`);
-        } else {
-          const claims: JWTToken = JwtDecode(accessToken);
-          const currentUser = {
-            id: claims.userId,
-            roles: { org: claims.orgRole, teams: new Map<string, string>(), projects: new Map<string, string>() },
-          };
-          setUser(currentUser);
-          setAccessToken(accessToken);
-          history.replace('/projects');
-        }
+    }).then(async (x) => {
+      const response = await x.json();
+      const { valid, userID } = response;
+      if (valid) {
+        setUser(userID);
+        history.replace('/projects');
       }
     });
   }, []);

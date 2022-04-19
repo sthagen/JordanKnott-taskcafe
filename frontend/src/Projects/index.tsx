@@ -12,18 +12,20 @@ import {
 
 import { Link } from 'react-router-dom';
 import NewProject from 'shared/components/NewProject';
-import { PermissionLevel, PermissionObjectType, useCurrentUser } from 'App/context';
+import { useCurrentUser } from 'App/context';
 import Button from 'shared/components/Button';
 import { usePopup, Popup } from 'shared/components/PopupMenu';
 import { useForm } from 'react-hook-form';
-import Input from 'shared/components/Input';
+import ControlledInput from 'shared/components/ControlledInput';
 import updateApolloCache from 'shared/utils/cache';
 import produce from 'immer';
 import NOOP from 'shared/utils/noop';
 import theme from 'App/ThemeStyles';
+import polling from 'shared/utils/polling';
 import { mixin } from '../shared/utils/styles';
+import FormInput from 'shared/components/FormInput';
 
-type CreateTeamData = { teamName: string };
+type CreateTeamData = { name: string };
 
 type CreateTeamFormProps = {
   onCreateTeam: (teamName: string) => void;
@@ -35,28 +37,30 @@ const CreateTeamButton = styled(Button)`
   width: 100%;
 `;
 
+const ErrorText = styled.span`
+  font-size: 14px;
+  color: ${(props) => props.theme.colors.danger};
+`;
 const CreateTeamForm: React.FC<CreateTeamFormProps> = ({ onCreateTeam }) => {
-  const { register, handleSubmit } = useForm<CreateTeamData>();
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<CreateTeamData>();
   const createTeam = (data: CreateTeamData) => {
-    onCreateTeam(data.teamName);
+    onCreateTeam(data.name);
   };
   return (
     <CreateTeamFormContainer onSubmit={handleSubmit(createTeam)}>
-      <Input
-        width="100%"
-        label="Team name"
-        id="teamName"
-        name="teamName"
-        variant="alternate"
-        ref={register({ required: 'Team name is required' })}
-      />
+      {errors.name && <ErrorText>{errors.name.message}</ErrorText>}
+      <FormInput width="100%" label="Team name" variant="alternate" {...register('name')} />
       <CreateTeamButton type="submit">Create</CreateTeamButton>
     </CreateTeamFormContainer>
   );
 };
 
 const ProjectAddTile = styled.div`
-  background-color: ${props => mixin.rgba(props.theme.colors.bg.primary, 0.4)};
+  background-color: ${(props) => mixin.rgba(props.theme.colors.bg.primary, 0.4)};
   background-size: cover;
   background-position: 50%;
   color: #fff;
@@ -70,7 +74,7 @@ const ProjectAddTile = styled.div`
 `;
 
 const ProjectTile = styled(Link)<{ color: string }>`
-  background-color: ${props => props.color};
+  background-color: ${(props) => props.color};
   background-size: cover;
   background-position: 50%;
   color: #fff;
@@ -141,7 +145,7 @@ const ProjectTileName = styled.div<{ centered?: boolean }>`
   max-height: 40px;
   width: 100%;
   word-wrap: break-word;
-  ${props => props.centered && 'text-align: center;'}
+  ${(props) => props.centered && 'text-align: center;'}
 `;
 
 const Wrapper = styled.div`
@@ -150,6 +154,7 @@ const Wrapper = styled.div`
   flex-direction: row;
   align-items: flex-start;
   justify-content: center;
+  overflow-y: auto;
 `;
 
 const ProjectSectionTitleWrapper = styled.div`
@@ -178,7 +183,7 @@ const SectionActionLink = styled(Link)`
 
 const ProjectSectionTitle = styled.h3`
   font-size: 16px;
-  color: ${props => props.theme.colors.text.primary};
+  color: ${(props) => props.theme.colors.text.primary};
 `;
 
 const ProjectsContainer = styled.div`
@@ -202,14 +207,14 @@ type ShowNewProject = {
 
 const Projects = () => {
   const { showPopup, hidePopup } = usePopup();
-  const { loading, data } = useGetProjectsQuery({ pollInterval: 3000, fetchPolicy: 'cache-and-network' });
+  const { loading, data } = useGetProjectsQuery({ pollInterval: polling.PROJECTS, fetchPolicy: 'cache-and-network' });
   useEffect(() => {
     document.title = 'Taskcafé';
   }, []);
   const [createProject] = useCreateProjectMutation({
     update: (client, newProject) => {
-      updateApolloCache<GetProjectsQuery>(client, GetProjectsDocument, cache =>
-        produce(cache, draftCache => {
+      updateApolloCache<GetProjectsQuery>(client, GetProjectsDocument, (cache) =>
+        produce(cache, (draftCache) => {
           if (newProject.data) {
             draftCache.projects.push({ ...newProject.data.createProject });
           }
@@ -222,8 +227,8 @@ const Projects = () => {
   const { user } = useCurrentUser();
   const [createTeam] = useCreateTeamMutation({
     update: (client, createData) => {
-      updateApolloCache<GetProjectsQuery>(client, GetProjectsDocument, cache =>
-        produce(cache, draftCache => {
+      updateApolloCache<GetProjectsQuery>(client, GetProjectsDocument, (cache) =>
+        produce(cache, (draftCache) => {
           if (createData.data) {
             draftCache.teams.push({ ...createData.data?.createTeam });
           }
@@ -237,7 +242,7 @@ const Projects = () => {
     const { projects, teams, organizations } = data;
     const organizationID = organizations[0].id ?? null;
     const personalProjects = projects
-      .filter(p => p.team === null)
+      .filter((p) => p.team === null)
       .sort((a, b) => {
         const textA = a.name.toUpperCase();
         const textB = b.name.toUpperCase();
@@ -249,12 +254,12 @@ const Projects = () => {
         const textB = b.name.toUpperCase();
         return textA < textB ? -1 : textA > textB ? 1 : 0; // eslint-disable-line no-nested-ternary
       })
-      .map(team => {
+      .map((team) => {
         return {
           id: team.id,
           name: team.name,
           projects: projects
-            .filter(project => project.team && project.team.id === team.id)
+            .filter((project) => project.team && project.team.id === team.id)
             .sort((a, b) => {
               const textA = a.name.toUpperCase();
               const textB = b.name.toUpperCase();
@@ -267,10 +272,10 @@ const Projects = () => {
         <GlobalTopNavbar onSaveProjectName={NOOP} projectID={null} name={null} />
         <Wrapper>
           <ProjectsContainer>
-            {user.roles.org === 'admin' && (
+            {true && ( // TODO: add permision check
               <AddTeamButton
                 variant="outline"
-                onClick={$target => {
+                onClick={($target) => {
                   showPopup(
                     $target,
                     <Popup
@@ -281,7 +286,7 @@ const Projects = () => {
                       }}
                     >
                       <CreateTeamForm
-                        onCreateTeam={teamName => {
+                        onCreateTeam={(teamName) => {
                           if (organizationID) {
                             createTeam({ variables: { name: teamName, organizationID } });
                             hidePopup();
@@ -302,7 +307,7 @@ const Projects = () => {
               <ProjectList>
                 {personalProjects.map((project, idx) => (
                   <ProjectListItem key={project.id}>
-                    <ProjectTile color={colors[idx % 5]} to={`/projects/${project.id}`}>
+                    <ProjectTile color={colors[idx % 5]} to={`/p/${project.shortId}`}>
                       <ProjectTileFade />
                       <ProjectTileDetails>
                         <ProjectTileName>{project.name}</ProjectTileName>
@@ -324,12 +329,12 @@ const Projects = () => {
                 </ProjectListItem>
               </ProjectList>
             </div>
-            {projectTeams.map(team => {
+            {projectTeams.map((team) => {
               return (
                 <div key={team.id}>
                   <ProjectSectionTitleWrapper>
                     <ProjectSectionTitle>{team.name}</ProjectSectionTitle>
-                    {user.isAdmin(PermissionLevel.TEAM, PermissionObjectType.TEAM, team.id) && (
+                    {true && ( // TODO: add permision check
                       <SectionActions>
                         <SectionActionLink to={`/teams/${team.id}`}>
                           <SectionAction variant="outline">Projects</SectionAction>
@@ -346,7 +351,7 @@ const Projects = () => {
                   <ProjectList>
                     {team.projects.map((project, idx) => (
                       <ProjectListItem key={project.id}>
-                        <ProjectTile color={colors[idx % 5]} to={`/projects/${project.id}`}>
+                        <ProjectTile color={colors[idx % 5]} to={`/p/${project.shortId}`}>
                           <ProjectTileFade />
                           <ProjectTileDetails>
                             <ProjectTileName>{project.name}</ProjectTileName>
@@ -354,7 +359,7 @@ const Projects = () => {
                         </ProjectTile>
                       </ProjectListItem>
                     ))}
-                    {user.isAdmin(PermissionLevel.TEAM, PermissionObjectType.TEAM, team.id) && (
+                    {true && ( // TODO: add permision check
                       <ProjectListItem>
                         <ProjectAddTile
                           onClick={() => {

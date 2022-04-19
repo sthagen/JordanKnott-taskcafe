@@ -33,6 +33,11 @@ type ChecklistBadge struct {
 	Total    int `json:"total"`
 }
 
+type CommentsBadge struct {
+	Total  int  `json:"total"`
+	Unread bool `json:"unread"`
+}
+
 type CreateTaskChecklist struct {
 	TaskID   uuid.UUID `json:"taskID"`
 	Name     string    `json:"name"`
@@ -53,6 +58,16 @@ type CreateTaskComment struct {
 type CreateTaskCommentPayload struct {
 	TaskID  uuid.UUID       `json:"taskID"`
 	Comment *db.TaskComment `json:"comment"`
+}
+
+type CreateTaskDueDateNotification struct {
+	TaskID   uuid.UUID                   `json:"taskID"`
+	Period   int                         `json:"period"`
+	Duration DueDateNotificationDuration `json:"duration"`
+}
+
+type CreateTaskDueDateNotificationsResult struct {
+	Notifications []DueDateNotification `json:"notifications"`
 }
 
 type CreateTeamMember struct {
@@ -139,6 +154,14 @@ type DeleteTaskCommentPayload struct {
 	CommentID uuid.UUID `json:"commentID"`
 }
 
+type DeleteTaskDueDateNotification struct {
+	ID uuid.UUID `json:"id"`
+}
+
+type DeleteTaskDueDateNotificationsResult struct {
+	Notifications []uuid.UUID `json:"notifications"`
+}
+
 type DeleteTaskGroupInput struct {
 	TaskGroupID uuid.UUID `json:"taskGroupID"`
 }
@@ -198,6 +221,17 @@ type DeleteUserAccountPayload struct {
 	UserAccount *db.UserAccount `json:"userAccount"`
 }
 
+type DueDate struct {
+	At            *time.Time            `json:"at"`
+	Notifications []DueDateNotification `json:"notifications"`
+}
+
+type DueDateNotification struct {
+	ID       uuid.UUID                   `json:"id"`
+	Period   int                         `json:"period"`
+	Duration DueDateNotificationDuration `json:"duration"`
+}
+
 type DuplicateTaskGroup struct {
 	ProjectID   uuid.UUID `json:"projectID"`
 	TaskGroupID uuid.UUID `json:"taskGroupID"`
@@ -210,11 +244,13 @@ type DuplicateTaskGroupPayload struct {
 }
 
 type FindProject struct {
-	ProjectID uuid.UUID `json:"projectID"`
+	ProjectID      *uuid.UUID `json:"projectID"`
+	ProjectShortID *string    `json:"projectShortID"`
 }
 
 type FindTask struct {
-	TaskID uuid.UUID `json:"taskID"`
+	TaskID      *uuid.UUID `json:"taskID"`
+	TaskShortID *string    `json:"taskShortID"`
 }
 
 type FindTeam struct {
@@ -223,6 +259,10 @@ type FindTeam struct {
 
 type FindUser struct {
 	UserID uuid.UUID `json:"userID"`
+}
+
+type HasUnreadNotificationsResult struct {
+	Unread bool `json:"unread"`
 }
 
 type InviteProjectMembers struct {
@@ -255,6 +295,7 @@ type LogoutUser struct {
 
 type MePayload struct {
 	User         *db.UserAccount `json:"user"`
+	Organization *RoleCode       `json:"organization"`
 	TeamRoles    []TeamRole      `json:"teamRoles"`
 	ProjectRoles []ProjectRole   `json:"projectRoles"`
 }
@@ -291,6 +332,16 @@ type MemberSearchResult struct {
 	Status     ShareStatus     `json:"status"`
 }
 
+type MyTasks struct {
+	Status MyTasksStatus `json:"status"`
+	Sort   MyTasksSort   `json:"sort"`
+}
+
+type MyTasksPayload struct {
+	Tasks    []db.Task            `json:"tasks"`
+	Projects []ProjectTaskMapping `json:"projects"`
+}
+
 type NewProject struct {
 	TeamID *uuid.UUID `json:"teamID"`
 	Name   string     `json:"name"`
@@ -302,14 +353,11 @@ type NewProjectLabel struct {
 	Name         *string   `json:"name"`
 }
 
-type NewRefreshToken struct {
-	UserID uuid.UUID `json:"userID"`
-}
-
 type NewTask struct {
-	TaskGroupID uuid.UUID `json:"taskGroupID"`
-	Name        string    `json:"name"`
-	Position    float64   `json:"position"`
+	TaskGroupID uuid.UUID   `json:"taskGroupID"`
+	Name        string      `json:"name"`
+	Position    float64     `json:"position"`
+	Assigned    []uuid.UUID `json:"assigned"`
 }
 
 type NewTaskGroup struct {
@@ -343,16 +391,42 @@ type NewUserAccount struct {
 	RoleCode string `json:"roleCode"`
 }
 
-type NotificationActor struct {
-	ID   uuid.UUID `json:"id"`
-	Type ActorType `json:"type"`
-	Name string    `json:"name"`
+type NotificationCausedBy struct {
+	Fullname string    `json:"fullname"`
+	Username string    `json:"username"`
+	ID       uuid.UUID `json:"id"`
 }
 
-type NotificationEntity struct {
-	ID   uuid.UUID  `json:"id"`
-	Type EntityType `json:"type"`
-	Name string     `json:"name"`
+type NotificationData struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type NotificationMarkAllAsReadResult struct {
+	Success bool `json:"success"`
+}
+
+type NotificationToggleReadInput struct {
+	NotifiedID uuid.UUID `json:"notifiedID"`
+}
+
+type Notified struct {
+	ID           uuid.UUID        `json:"id"`
+	Notification *db.Notification `json:"notification"`
+	Read         bool             `json:"read"`
+	ReadAt       *time.Time       `json:"readAt"`
+}
+
+type NotifiedInput struct {
+	Limit  int                `json:"limit"`
+	Cursor *string            `json:"cursor"`
+	Filter NotificationFilter `json:"filter"`
+}
+
+type NotifiedResult struct {
+	TotalCount int        `json:"totalCount"`
+	Notified   []Notified `json:"notified"`
+	PageInfo   *PageInfo  `json:"pageInfo"`
 }
 
 type OwnedList struct {
@@ -365,15 +439,31 @@ type OwnersList struct {
 	Teams    []uuid.UUID `json:"teams"`
 }
 
+type PageInfo struct {
+	EndCursor   *string `json:"endCursor"`
+	HasNextPage bool    `json:"hasNextPage"`
+}
+
 type ProfileIcon struct {
 	URL      *string `json:"url"`
 	Initials *string `json:"initials"`
 	BgColor  *string `json:"bgColor"`
 }
 
+type ProjectPermission struct {
+	Team    RoleCode `json:"team"`
+	Project RoleCode `json:"project"`
+	Org     RoleCode `json:"org"`
+}
+
 type ProjectRole struct {
 	ProjectID uuid.UUID `json:"projectID"`
 	RoleCode  RoleCode  `json:"roleCode"`
+}
+
+type ProjectTaskMapping struct {
+	ProjectID uuid.UUID `json:"projectID"`
+	TaskID    uuid.UUID `json:"taskID"`
 }
 
 type ProjectsFilter struct {
@@ -412,6 +502,7 @@ type TaskActivityData struct {
 
 type TaskBadges struct {
 	Checklist *ChecklistBadge `json:"checklist"`
+	Comments  *CommentsBadge  `json:"comments"`
 }
 
 type TaskPositionUpdate struct {
@@ -419,9 +510,23 @@ type TaskPositionUpdate struct {
 	Position float64   `json:"position"`
 }
 
+type TeamPermission struct {
+	Team RoleCode `json:"team"`
+	Org  RoleCode `json:"org"`
+}
+
 type TeamRole struct {
 	TeamID   uuid.UUID `json:"teamID"`
 	RoleCode RoleCode  `json:"roleCode"`
+}
+
+type ToggleProjectVisibility struct {
+	ProjectID uuid.UUID `json:"projectID"`
+	IsPublic  bool      `json:"isPublic"`
+}
+
+type ToggleProjectVisibilityPayload struct {
+	Project *db.Project `json:"project"`
 }
 
 type ToggleTaskLabelInput struct {
@@ -432,6 +537,10 @@ type ToggleTaskLabelInput struct {
 type ToggleTaskLabelPayload struct {
 	Active bool     `json:"active"`
 	Task   *db.Task `json:"task"`
+}
+
+type ToggleTaskWatch struct {
+	TaskID uuid.UUID `json:"taskID"`
 }
 
 type UnassignTaskInput struct {
@@ -519,7 +628,18 @@ type UpdateTaskDescriptionInput struct {
 
 type UpdateTaskDueDate struct {
 	TaskID  uuid.UUID  `json:"taskID"`
+	HasTime bool       `json:"hasTime"`
 	DueDate *time.Time `json:"dueDate"`
+}
+
+type UpdateTaskDueDateNotification struct {
+	ID       uuid.UUID                   `json:"id"`
+	Period   int                         `json:"period"`
+	Duration DueDateNotificationDuration `json:"duration"`
+}
+
+type UpdateTaskDueDateNotificationsResult struct {
+	Notifications []DueDateNotification `json:"notifications"`
 }
 
 type UpdateTaskGroupName struct {
@@ -625,16 +745,44 @@ func (e ActionLevel) MarshalGQL(w io.Writer) {
 type ActionType string
 
 const (
-	ActionTypeTaskMemberAdded ActionType = "TASK_MEMBER_ADDED"
+	ActionTypeTeamAdded              ActionType = "TEAM_ADDED"
+	ActionTypeTeamRemoved            ActionType = "TEAM_REMOVED"
+	ActionTypeProjectAdded           ActionType = "PROJECT_ADDED"
+	ActionTypeProjectRemoved         ActionType = "PROJECT_REMOVED"
+	ActionTypeProjectArchived        ActionType = "PROJECT_ARCHIVED"
+	ActionTypeDueDateAdded           ActionType = "DUE_DATE_ADDED"
+	ActionTypeDueDateRemoved         ActionType = "DUE_DATE_REMOVED"
+	ActionTypeDueDateChanged         ActionType = "DUE_DATE_CHANGED"
+	ActionTypeDueDateReminder        ActionType = "DUE_DATE_REMINDER"
+	ActionTypeTaskAssigned           ActionType = "TASK_ASSIGNED"
+	ActionTypeTaskMoved              ActionType = "TASK_MOVED"
+	ActionTypeTaskArchived           ActionType = "TASK_ARCHIVED"
+	ActionTypeTaskAttachmentUploaded ActionType = "TASK_ATTACHMENT_UPLOADED"
+	ActionTypeCommentMentioned       ActionType = "COMMENT_MENTIONED"
+	ActionTypeCommentOther           ActionType = "COMMENT_OTHER"
 )
 
 var AllActionType = []ActionType{
-	ActionTypeTaskMemberAdded,
+	ActionTypeTeamAdded,
+	ActionTypeTeamRemoved,
+	ActionTypeProjectAdded,
+	ActionTypeProjectRemoved,
+	ActionTypeProjectArchived,
+	ActionTypeDueDateAdded,
+	ActionTypeDueDateRemoved,
+	ActionTypeDueDateChanged,
+	ActionTypeDueDateReminder,
+	ActionTypeTaskAssigned,
+	ActionTypeTaskMoved,
+	ActionTypeTaskArchived,
+	ActionTypeTaskAttachmentUploaded,
+	ActionTypeCommentMentioned,
+	ActionTypeCommentOther,
 }
 
 func (e ActionType) IsValid() bool {
 	switch e {
-	case ActionTypeTaskMemberAdded:
+	case ActionTypeTeamAdded, ActionTypeTeamRemoved, ActionTypeProjectAdded, ActionTypeProjectRemoved, ActionTypeProjectArchived, ActionTypeDueDateAdded, ActionTypeDueDateRemoved, ActionTypeDueDateChanged, ActionTypeDueDateReminder, ActionTypeTaskAssigned, ActionTypeTaskMoved, ActionTypeTaskArchived, ActionTypeTaskAttachmentUploaded, ActionTypeCommentMentioned, ActionTypeCommentOther:
 		return true
 	}
 	return false
@@ -718,81 +866,189 @@ func (e ActivityType) MarshalGQL(w io.Writer) {
 	fmt.Fprint(w, strconv.Quote(e.String()))
 }
 
-type ActorType string
+type DueDateNotificationDuration string
 
 const (
-	ActorTypeUser ActorType = "USER"
+	DueDateNotificationDurationMinute DueDateNotificationDuration = "MINUTE"
+	DueDateNotificationDurationHour   DueDateNotificationDuration = "HOUR"
+	DueDateNotificationDurationDay    DueDateNotificationDuration = "DAY"
+	DueDateNotificationDurationWeek   DueDateNotificationDuration = "WEEK"
 )
 
-var AllActorType = []ActorType{
-	ActorTypeUser,
+var AllDueDateNotificationDuration = []DueDateNotificationDuration{
+	DueDateNotificationDurationMinute,
+	DueDateNotificationDurationHour,
+	DueDateNotificationDurationDay,
+	DueDateNotificationDurationWeek,
 }
 
-func (e ActorType) IsValid() bool {
+func (e DueDateNotificationDuration) IsValid() bool {
 	switch e {
-	case ActorTypeUser:
+	case DueDateNotificationDurationMinute, DueDateNotificationDurationHour, DueDateNotificationDurationDay, DueDateNotificationDurationWeek:
 		return true
 	}
 	return false
 }
 
-func (e ActorType) String() string {
+func (e DueDateNotificationDuration) String() string {
 	return string(e)
 }
 
-func (e *ActorType) UnmarshalGQL(v interface{}) error {
+func (e *DueDateNotificationDuration) UnmarshalGQL(v interface{}) error {
 	str, ok := v.(string)
 	if !ok {
 		return fmt.Errorf("enums must be strings")
 	}
 
-	*e = ActorType(str)
+	*e = DueDateNotificationDuration(str)
 	if !e.IsValid() {
-		return fmt.Errorf("%s is not a valid ActorType", str)
+		return fmt.Errorf("%s is not a valid DueDateNotificationDuration", str)
 	}
 	return nil
 }
 
-func (e ActorType) MarshalGQL(w io.Writer) {
+func (e DueDateNotificationDuration) MarshalGQL(w io.Writer) {
 	fmt.Fprint(w, strconv.Quote(e.String()))
 }
 
-type EntityType string
+type MyTasksSort string
 
 const (
-	EntityTypeTask EntityType = "TASK"
+	MyTasksSortNone    MyTasksSort = "NONE"
+	MyTasksSortProject MyTasksSort = "PROJECT"
+	MyTasksSortDueDate MyTasksSort = "DUE_DATE"
 )
 
-var AllEntityType = []EntityType{
-	EntityTypeTask,
+var AllMyTasksSort = []MyTasksSort{
+	MyTasksSortNone,
+	MyTasksSortProject,
+	MyTasksSortDueDate,
 }
 
-func (e EntityType) IsValid() bool {
+func (e MyTasksSort) IsValid() bool {
 	switch e {
-	case EntityTypeTask:
+	case MyTasksSortNone, MyTasksSortProject, MyTasksSortDueDate:
 		return true
 	}
 	return false
 }
 
-func (e EntityType) String() string {
+func (e MyTasksSort) String() string {
 	return string(e)
 }
 
-func (e *EntityType) UnmarshalGQL(v interface{}) error {
+func (e *MyTasksSort) UnmarshalGQL(v interface{}) error {
 	str, ok := v.(string)
 	if !ok {
 		return fmt.Errorf("enums must be strings")
 	}
 
-	*e = EntityType(str)
+	*e = MyTasksSort(str)
 	if !e.IsValid() {
-		return fmt.Errorf("%s is not a valid EntityType", str)
+		return fmt.Errorf("%s is not a valid MyTasksSort", str)
 	}
 	return nil
 }
 
-func (e EntityType) MarshalGQL(w io.Writer) {
+func (e MyTasksSort) MarshalGQL(w io.Writer) {
+	fmt.Fprint(w, strconv.Quote(e.String()))
+}
+
+type MyTasksStatus string
+
+const (
+	MyTasksStatusAll               MyTasksStatus = "ALL"
+	MyTasksStatusIncomplete        MyTasksStatus = "INCOMPLETE"
+	MyTasksStatusCompleteAll       MyTasksStatus = "COMPLETE_ALL"
+	MyTasksStatusCompleteToday     MyTasksStatus = "COMPLETE_TODAY"
+	MyTasksStatusCompleteYesterday MyTasksStatus = "COMPLETE_YESTERDAY"
+	MyTasksStatusCompleteOneWeek   MyTasksStatus = "COMPLETE_ONE_WEEK"
+	MyTasksStatusCompleteTwoWeek   MyTasksStatus = "COMPLETE_TWO_WEEK"
+	MyTasksStatusCompleteThreeWeek MyTasksStatus = "COMPLETE_THREE_WEEK"
+)
+
+var AllMyTasksStatus = []MyTasksStatus{
+	MyTasksStatusAll,
+	MyTasksStatusIncomplete,
+	MyTasksStatusCompleteAll,
+	MyTasksStatusCompleteToday,
+	MyTasksStatusCompleteYesterday,
+	MyTasksStatusCompleteOneWeek,
+	MyTasksStatusCompleteTwoWeek,
+	MyTasksStatusCompleteThreeWeek,
+}
+
+func (e MyTasksStatus) IsValid() bool {
+	switch e {
+	case MyTasksStatusAll, MyTasksStatusIncomplete, MyTasksStatusCompleteAll, MyTasksStatusCompleteToday, MyTasksStatusCompleteYesterday, MyTasksStatusCompleteOneWeek, MyTasksStatusCompleteTwoWeek, MyTasksStatusCompleteThreeWeek:
+		return true
+	}
+	return false
+}
+
+func (e MyTasksStatus) String() string {
+	return string(e)
+}
+
+func (e *MyTasksStatus) UnmarshalGQL(v interface{}) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("enums must be strings")
+	}
+
+	*e = MyTasksStatus(str)
+	if !e.IsValid() {
+		return fmt.Errorf("%s is not a valid MyTasksStatus", str)
+	}
+	return nil
+}
+
+func (e MyTasksStatus) MarshalGQL(w io.Writer) {
+	fmt.Fprint(w, strconv.Quote(e.String()))
+}
+
+type NotificationFilter string
+
+const (
+	NotificationFilterAll       NotificationFilter = "ALL"
+	NotificationFilterUnread    NotificationFilter = "UNREAD"
+	NotificationFilterAssigned  NotificationFilter = "ASSIGNED"
+	NotificationFilterMentioned NotificationFilter = "MENTIONED"
+)
+
+var AllNotificationFilter = []NotificationFilter{
+	NotificationFilterAll,
+	NotificationFilterUnread,
+	NotificationFilterAssigned,
+	NotificationFilterMentioned,
+}
+
+func (e NotificationFilter) IsValid() bool {
+	switch e {
+	case NotificationFilterAll, NotificationFilterUnread, NotificationFilterAssigned, NotificationFilterMentioned:
+		return true
+	}
+	return false
+}
+
+func (e NotificationFilter) String() string {
+	return string(e)
+}
+
+func (e *NotificationFilter) UnmarshalGQL(v interface{}) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("enums must be strings")
+	}
+
+	*e = NotificationFilter(str)
+	if !e.IsValid() {
+		return fmt.Errorf("%s is not a valid NotificationFilter", str)
+	}
+	return nil
+}
+
+func (e NotificationFilter) MarshalGQL(w io.Writer) {
 	fmt.Fprint(w, strconv.Quote(e.String()))
 }
 

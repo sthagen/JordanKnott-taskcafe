@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/99designs/gqlgen/graphql"
@@ -16,29 +17,48 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/lru"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
-	"github.com/jordanknott/taskcafe/internal/auth"
+	"github.com/jordanknott/taskcafe/internal/config"
 	"github.com/jordanknott/taskcafe/internal/db"
+	"github.com/jordanknott/taskcafe/internal/jobs"
 	"github.com/jordanknott/taskcafe/internal/logger"
 	"github.com/jordanknott/taskcafe/internal/utils"
 	log "github.com/sirupsen/logrus"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
+type NotificationObservers struct {
+	Mu          sync.Mutex
+	Subscribers map[string]map[string]chan *Notified
+}
+
 // NewHandler returns a new graphql endpoint handler.
-func NewHandler(repo db.Repository, emailConfig utils.EmailConfig) http.Handler {
-	c := Config{
-		Resolvers: &Resolver{
-			Repository:  repo,
-			EmailConfig: emailConfig,
+func NewHandler(repo db.Repository, appConfig config.AppConfig, jobQueue jobs.JobQueue, redisClient *redis.Client) http.Handler {
+	resolver := &Resolver{
+		Repository: repo,
+		Redis:      redisClient,
+		AppConfig:  appConfig,
+		Job:        jobQueue,
+		Notifications: &NotificationObservers{
+			Mu:          sync.Mutex{},
+			Subscribers: make(map[string]map[string]chan *Notified),
 		},
 	}
+	resolver.SubscribeRedis()
+	c := Config{
+		Resolvers: resolver,
+	}
 	c.Directives.HasRole = func(ctx context.Context, obj interface{}, next graphql.Resolver, roles []RoleLevel, level ActionLevel, typeArg ObjectType) (interface{}, error) {
-		role, ok := GetUserRole(ctx)
+		userID, ok := GetUser(ctx)
 		if !ok {
-			return nil, errors.New("user ID is missing")
+			return nil, errors.New("user must be logged in")
 		}
-		if role == "admin" {
+		user, err := repo.GetUserAccountByID(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if user.RoleCode == "admin" {
 			return next(ctx)
 		} else if level == ActionLevelOrg {
 			return nil, errors.New("must be an org admin")
@@ -82,7 +102,6 @@ func NewHandler(repo db.Repository, emailConfig utils.EmailConfig) http.Handler 
 			return nil, errors.New("error while casting subject uuid")
 		}
 
-		var err error
 		if level == ActionLevelProject {
 			logger.New(ctx).WithFields(log.Fields{"subjectID": subjectID}).Info("fetching subject ID by typeArg")
 			if typeArg == ObjectTypeTask {
@@ -128,10 +147,6 @@ func NewHandler(repo db.Repository, emailConfig utils.EmailConfig) http.Handler 
 				},
 			}
 		} else if level == ActionLevelTeam {
-			userID, ok := GetUserID(ctx)
-			if !ok {
-				return nil, errors.New("user id is missing")
-			}
 			role, err := repo.GetTeamRoleForUserID(ctx, db.GetTeamRoleForUserIDParams{UserID: userID, TeamID: subjectID})
 			if err != nil {
 				logger.New(ctx).WithError(err).Error("error while getting team roles for user ID")
@@ -190,23 +205,10 @@ func GetUserID(ctx context.Context) (uuid.UUID, bool) {
 	return userID, ok
 }
 
-// GetUserRole retrieves the user role out of a context
-func GetUserRole(ctx context.Context) (auth.Role, bool) {
-	role, ok := ctx.Value(utils.OrgRoleKey).(auth.Role)
-	return role, ok
-}
-
 // GetUser retrieves both the user id & user role out of a context
-func GetUser(ctx context.Context) (uuid.UUID, auth.Role, bool) {
+func GetUser(ctx context.Context) (uuid.UUID, bool) {
 	userID, userOK := GetUserID(ctx)
-	role, roleOK := GetUserRole(ctx)
-	return userID, role, userOK && roleOK
-}
-
-// GetRestrictedMode retrieves the restricted mode code out of a context
-func GetRestrictedMode(ctx context.Context) (auth.RestrictedMode, bool) {
-	restricted, ok := ctx.Value(utils.RestrictedModeKey).(auth.RestrictedMode)
-	return restricted, ok
+	return userID, userOK
 }
 
 // GetProjectRoles retrieves the team & project role for the given project ID
@@ -237,26 +239,6 @@ func ConvertToRoleCode(r string) RoleCode {
 	return RoleCodeObserver
 }
 
-// GetEntityType converts integer to EntityType enum
-func GetEntityType(entityType int32) EntityType {
-	switch entityType {
-	case 1:
-		return EntityTypeTask
-	default:
-		panic("Not a valid entity type!")
-	}
-}
-
-// GetActionType converts integer to ActionType enum
-func GetActionType(actionType int32) ActionType {
-	switch actionType {
-	case 1:
-		return ActionTypeTaskMemberAdded
-	default:
-		panic("Not a valid entity type!")
-	}
-}
-
 type MemberType string
 
 const (
@@ -281,3 +263,23 @@ const (
 	TASK_CHECKLIST_ADDED     int32 = 9
 	TASK_CHECKLIST_REMOVED   int32 = 10
 )
+
+func NotAuthorized() error {
+	return &gqlerror.Error{
+		Message: "Not authorized",
+		Extensions: map[string]interface{}{
+			"code": "UNAUTHENTICATED",
+		},
+	}
+}
+
+func IsProjectPublic(ctx context.Context, repo db.Repository, projectID uuid.UUID) (bool, error) {
+	publicOn, err := repo.GetPublicOn(ctx, projectID)
+	if err != nil {
+		return false, err
+	}
+	if !publicOn.Valid {
+		return false, nil
+	}
+	return true, nil
+}
